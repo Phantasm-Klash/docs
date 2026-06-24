@@ -31,7 +31,7 @@ This repository contains:
 
 Development progress is tracked in [dev/progress.md](dev/progress.md).
 
-The `dev/gotouhou/` folder contains early planning material under the original internal codename. It is kept as historical planning context only; formal project names are Phantasm Klash, Gensoulkyo, and SpellKard.
+The `dev/gotouhou/` folder contains active planning material written under the original project name and development codename. These documents are part of the current development basis. New public-facing names should use Phantasm Klash, Gensoulkyo, and SpellKard, while the planning content itself remains valid unless replaced by newer docs.
 
 ## Licensing
 
@@ -42,4 +42,3 @@ Unless otherwise noted:
 - Visual, audio, font, and third-party assets require per-file license records before inclusion.
 
 See [LICENSE](LICENSE), [LICENSE-CC-BY-4.0.md](LICENSE-CC-BY-4.0.md), and [docs/licensing.md](docs/licensing.md).
-
