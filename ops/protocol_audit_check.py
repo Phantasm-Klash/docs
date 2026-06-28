@@ -21,7 +21,8 @@ REQUIRED_SHARED_MESSAGES = {
     "BusinessSecureEnvelope": {"version", "session_id", "seq", "timestamp_ms", "nonce", "op_code", "key_id", "auth_tag"},
     "BattleTicket": {"match_id", "user_id", "player_id", "mode_id", "battle_server_id", "endpoint", "ruleset_version", "expires_at_ms"},
     "BattlePacketHeader": {"match_id", "player_id", "tick", "seq", "ack", "payload_type", "key_id", "nonce"},
-    "BattleInput": {"match_id", "player_id", "tick", "seq", "direction_bits", "slow", "shoot", "bomb", "card_slot"},
+    "BattleInput": {"match_id", "player_id", "tick", "seq", "direction_bits", "slow", "shoot", "bomb", "card_slot", "mode_action_id"},
+    "BattleModeAction": {"match_id", "player_id", "tick", "seq", "action_id", "action_type", "payload_json", "client_result_authoritative"},
     "BattleResult": {"match_id", "mode_id", "result_hash", "replay_id", "player_ids", "settled_at_ms"},
 }
 
@@ -239,9 +240,12 @@ def check_cross_repo_contract(root: Path) -> int:
     spell_text = spell_descriptor_model.read_text(encoding="utf-8")
     if "PhK-Protocol/descriptors/phk_v1_descriptor.json" not in spell_text:
         fail(errors, "SpellKard ProtocolDescriptorModel is not pointed at PhK-Protocol descriptor")
-    for message in ["BusinessSecureEnvelope", "BattleTicket", "BattlePacketHeader", "BattleInput", "BattleResult"]:
+    for message in ["BusinessSecureEnvelope", "BattleTicket", "BattlePacketHeader", "BattleInput", "BattleModeAction", "BattleResult"]:
         if message not in spell_text:
             fail(errors, f"SpellKard minimal descriptor validation missing {message}")
+    for token in ["BATTLE_PAYLOAD_TYPE_MODE_ACTION", "mode_action_field_missing"]:
+        if token not in spell_text:
+            fail(errors, f"SpellKard protocol descriptor mode action gate missing {token}")
 
     go_mod = gensoul_go_mod.read_text(encoding="utf-8")
     if "github.com/phantasm-klash/phk-protocol" not in go_mod or "../PhK-Protocol" not in go_mod:
@@ -255,6 +259,10 @@ def check_cross_repo_contract(root: Path) -> int:
     for token in ["phk/v1/manifest.hpp", "phk::v1::kProtocolVersion", "phk::v1::kBattleApiVersion", "phk::v1::kRulesetVersion"]:
         if token not in battle_text:
             fail(errors, f"PhK-BattleServer version boundary missing {token}")
+    battle_test = battle_server_tests.read_text(encoding="utf-8")
+    for token in ["BattlePayloadType::ModeAction", "mode_action_empty_payload", "PayloadTypeName(phk::battle::BattlePayloadType::ModeAction)"]:
+        if token not in battle_test:
+            fail(errors, f"PhK-BattleServer mode action dispatch coverage missing {token}")
 
     if errors:
         for error in errors:
