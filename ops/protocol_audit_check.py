@@ -72,6 +72,23 @@ def parse_go_constants(path: Path) -> dict[str, str]:
     return constants
 
 
+def gdscript_function(text: str, name: str) -> str:
+    marker = f"func {name}("
+    start = text.find(marker)
+    if start < 0:
+        return ""
+    next_func = text.find("\nfunc ", start + len(marker))
+    if next_func < 0:
+        return text[start:]
+    return text[start:next_func]
+
+
+def require_tokens(errors: list[str], text: str, tokens: list[str], label: str) -> None:
+    for token in tokens:
+        if token not in text:
+            fail(errors, f"{label} missing {token}")
+
+
 def check_battle_result_callback_contract(
     errors: list[str],
     fixture_path: Path,
@@ -233,6 +250,115 @@ def check_battle_mode_action_contract(
             fail(errors, f"PhK-BattleServer mode action test missing shared fixture constant {token}")
 
 
+def check_spellkard_mode_action_client_builder(
+    errors: list[str],
+    battle_network_client: Path,
+    api_model: Path,
+    game_mode_model: Path,
+    http_client: Path,
+    main_script: Path,
+) -> None:
+    battle_network_text = battle_network_client.read_text(encoding="utf-8")
+    build_mode_action = gdscript_function(battle_network_text, "build_mode_action")
+    if not build_mode_action:
+        fail(errors, "SpellKard BattleNetworkClientModel missing build_mode_action")
+    else:
+        require_tokens(
+            errors,
+            build_mode_action,
+            [
+                'build_packet_header("mode_action", tick, ack)',
+                '"match_id": match_id',
+                '"player_id": player_id',
+                '"action_id": normalized_action_id',
+                '"action_type": normalized_action_type',
+                '"payload_json": JSON.stringify(payload.duplicate(true))',
+                '"seq": action_seq',
+                '"client_result_authoritative": false',
+            ],
+            "SpellKard battle network mode action builder",
+        )
+
+    api_text = api_model.read_text(encoding="utf-8")
+    mode_action_request = gdscript_function(api_text, "mode_action_request")
+    if not mode_action_request:
+        fail(errors, "SpellKard GensoulkyoAPIModel missing mode_action_request builder")
+    else:
+        require_tokens(
+            errors,
+            mode_action_request,
+            [
+                'payload_value: Variant = action_request.get("payload", {})',
+                "payload = (payload_value as Dictionary).duplicate(true)",
+                '"mode_id": String(action_request.get("mode_id", current_mode_id))',
+                '"action_type": String(action_request.get("action_type", ""))',
+                '"payload": payload',
+                '"client_result_authoritative": false',
+                '"/v1/matches/%s/mode-action"',
+                '"match_mode_action"',
+            ],
+            "SpellKard mode action request builder",
+        )
+
+    apply_mode_action_response = gdscript_function(api_text, "apply_mode_action_response")
+    if not apply_mode_action_response:
+        fail(errors, "SpellKard GensoulkyoAPIModel missing apply_mode_action_response")
+    else:
+        require_tokens(
+            errors,
+            apply_mode_action_response,
+            [
+                'var accepted := bool(response.get("accepted", false))',
+                '"server_authoritative": bool(response.get("server_authoritative", false))',
+                '"client_result_authoritative": bool(response.get("client_result_authoritative", true))',
+                'game_mode_model.apply_server_mode_action_response(response)',
+            ],
+            "SpellKard mode action response projection",
+        )
+
+    game_mode_text = game_mode_model.read_text(encoding="utf-8")
+    record_mode_action = gdscript_function(game_mode_text, "_record_mode_action")
+    if not record_mode_action:
+        fail(errors, "SpellKard GameModeModel missing _record_mode_action builder")
+    else:
+        require_tokens(
+            errors,
+            record_mode_action,
+            [
+                '"mode_id": mode_id',
+                '"action_type": action_type',
+                '"payload": payload.duplicate(true)',
+                '"client_result_authoritative": false',
+                "mode_action_requests.append(request)",
+            ],
+            "SpellKard game mode action builder",
+        )
+
+    http_text = http_client.read_text(encoding="utf-8")
+    submit_mode_action = gdscript_function(http_text, "submit_mode_action")
+    if not submit_mode_action:
+        fail(errors, "SpellKard GensoulkyoHTTPClient missing submit_mode_action")
+    else:
+        require_tokens(
+            errors,
+            submit_mode_action,
+            ["api_model.mode_action_request(target_match_id, action_request)", "send_and_apply"],
+            "SpellKard mode action HTTP submit path",
+        )
+
+    main_text = main_script.read_text(encoding="utf-8")
+    main_submit_mode_action = gdscript_function(main_text, "_gensoulkyo_submit_mode_action")
+    if not main_submit_mode_action:
+        fail(errors, "SpellKard main script missing _gensoulkyo_submit_mode_action")
+    else:
+        require_tokens(
+            errors,
+            main_submit_mode_action,
+            ["gensoulkyo_http_client.submit_mode_action(target_match_id, action_request)", "_update_ui_overlay()"],
+            "SpellKard mode action UI submit path",
+        )
+
+
 def check_cross_repo_contract(root: Path) -> int:
     errors: list[str] = []
     protocol_root = root / "PhK-Protocol"
@@ -245,7 +371,11 @@ def check_cross_repo_contract(root: Path) -> int:
     go_manifest_path = protocol_root / "gen" / "go" / "phk" / "v1" / "manifest.go"
     cpp_manifest_path = protocol_root / "gen" / "cpp" / "phk" / "v1" / "manifest.hpp"
     spell_descriptor_model = spell_root / "godot" / "scripts" / "protocol_descriptor_model.gd"
+    spell_battle_network_client = spell_root / "godot" / "scripts" / "battle_network_client_model.gd"
     spell_api_model = spell_root / "godot" / "scripts" / "gensoulkyo_api_model.gd"
+    spell_game_mode_model = spell_root / "godot" / "scripts" / "game_mode_model.gd"
+    spell_http_client = spell_root / "godot" / "scripts" / "gensoulkyo_http_client.gd"
+    spell_main = spell_root / "godot" / "scripts" / "main.gd"
     gensoul_go_mod = gensoul_root / "go.mod"
     gensoul_contract_test = gensoul_root / "runtime" / "core" / "protocol_contract_test.go"
     gensoul_service_test = gensoul_root / "runtime" / "core" / "service_test.go"
@@ -330,6 +460,14 @@ def check_cross_repo_contract(root: Path) -> int:
     for token in ["mode_action_request", '"client_result_authoritative": false']:
         if token not in spell_api_text:
             fail(errors, f"SpellKard mode action request authority guard missing {token}")
+    check_spellkard_mode_action_client_builder(
+        errors,
+        spell_battle_network_client,
+        spell_api_model,
+        spell_game_mode_model,
+        spell_http_client,
+        spell_main,
+    )
 
     go_mod = gensoul_go_mod.read_text(encoding="utf-8")
     if "github.com/phantasm-klash/phk-protocol" not in go_mod or "../PhK-Protocol" not in go_mod:
