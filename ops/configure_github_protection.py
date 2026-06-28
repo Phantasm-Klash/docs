@@ -65,7 +65,7 @@ def configure_repo(repo_config: RepoProtection) -> None:
         "required_pull_request_reviews": {
             "dismiss_stale_reviews": True,
             "require_code_owner_reviews": True,
-            "required_approving_review_count": 1,
+            "required_approving_review_count": 0,
             "require_last_push_approval": False,
         },
         "restrictions": None,

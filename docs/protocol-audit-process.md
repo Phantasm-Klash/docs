@@ -43,3 +43,8 @@ conversation resolution, branch deletion prevention, and delete-branch-on-merge
 for `docs`, `SpellKard`, `Gensoulkyo`, `PhK-Protocol`, and `PhK-BattleServer`.
 After a PR is opened, GitHub auto-merge can be enabled on that PR once the
 required checks are present.
+
+Because the organization currently has a single visible member, branch
+protection keeps CODEOWNERS metadata but does not require a second approving
+review. The effective merge gate is the required audit workflow plus optional
+`codex-auto-merge` label for low-risk maintenance PRs.

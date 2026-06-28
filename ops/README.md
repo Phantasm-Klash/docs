@@ -42,7 +42,7 @@ on the configured port.
 `configure_github_protection.py` configures the public repositories with:
 
 - required protocol-audit checks on `main`;
-- code-owner review for pull requests;
+- code-owner review metadata for pull requests;
 - stale review dismissal;
 - conversation resolution;
 - force-push and branch-deletion denial;
@@ -57,3 +57,8 @@ python3 ops/configure_github_protection.py
 GitHub auto-merge is PR-scoped and must still be enabled on eligible pull
 requests after required checks pass. The repository-level script creates the
 required merge gate that auto-merge depends on.
+
+The Phantasm-Klash organization currently has a single visible member, so the
+script sets the required approving review count to `0` to avoid self-review
+deadlock while still preserving required checks and CODEOWNERS metadata. When a
+separate reviewer or team exists, raise the count to `1`.
