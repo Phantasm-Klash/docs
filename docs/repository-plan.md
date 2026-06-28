@@ -41,7 +41,7 @@ Local shared protocol directory for:
 
 This repository should be open source and versioned before production C++ Battle Server migration begins. Draft schemas and manifest/descriptor bridges already exist; full generated Go/C++/Godot protobuf bindings are still pending.
 
-Current repository boundary: `/root/gotouhou/PhK-Protocol` exists locally, but `https://github.com/Phantasm-Klash/PhK-Protocol.git` is not available and the directory is not a Git working tree on the current host. The next infrastructure step is to create the GitHub repository, initialize the local directory on `main`, add the remote, push the current skeleton, then enable the same protocol-audit branch protection used by `Gensoulkyo` and `SpellKard`.
+Current repository boundary: `/root/gotouhou/PhK-Protocol` is now a local `main` Git working tree with initial commit `73901c3`. The public GitHub repository `https://github.com/Phantasm-Klash/PhK-Protocol` exists, but it is still empty until the initial `main` push succeeds. The next infrastructure step is to push `main`, then enable the same protocol-audit branch protection used by `Gensoulkyo` and `SpellKard`.
 
 ## PhK-BattleServer
 
@@ -54,7 +54,7 @@ Local C++ combat server directory for:
 
 This repository should be open source for the base combat rules. It must not contain Steam SDK files, commercial drop strategies, or official private deployment secrets. Current implementation is a C++ skeleton with packet/ticket/result structural guards plus an early 60Hz authoritative simulation/hash snapshot slice; real KCP, crypto, protobuf bindings, and golden replay validation are still pending.
 
-Current repository boundary: `/root/gotouhou/PhK-BattleServer` exists locally, but `https://github.com/Phantasm-Klash/PhK-BattleServer.git` is not available and the directory is not a Git working tree on the current host. The next infrastructure step is to create the GitHub repository, initialize the local directory on `main`, add the remote, push the current skeleton, then require C++ checker/build jobs before merging network or simulation PRs.
+Current repository boundary: `/root/gotouhou/PhK-BattleServer` is now a local `main` Git working tree with initial commit `7f93f5b`. The public GitHub repository `https://github.com/Phantasm-Klash/PhK-BattleServer` exists, but it is still empty until the initial `main` push succeeds. The next infrastructure step is to push `main`, then require C++ checker/build jobs before merging network or simulation PRs.
 
 ## SpellKard
 
