@@ -36,3 +36,24 @@ GOTOUHOU_MAIL_TO=wjcwqc@qq.com
 
 Use `GOTOUHOU_SMTP_STARTTLS=1` only if the target SMTP account supports STARTTLS
 on the configured port.
+
+## GitHub branch protection
+
+`configure_github_protection.py` configures the public repositories with:
+
+- required protocol-audit checks on `main`;
+- code-owner review for pull requests;
+- stale review dismissal;
+- conversation resolution;
+- force-push and branch-deletion denial;
+- delete branch on merge.
+
+Run after authenticating `gh` with repository administration permissions:
+
+```sh
+python3 ops/configure_github_protection.py
+```
+
+GitHub auto-merge is PR-scoped and must still be enabled on eligible pull
+requests after required checks pass. The repository-level script creates the
+required merge gate that auto-merge depends on.

@@ -36,3 +36,10 @@ The docs repository contains `.github/workflows/protocol-audit.yml` as the
 canonical workflow template. Mirror it into each implementation repository, or
 wire equivalent repository-specific checks, before enabling required branch
 protection on `main`.
+
+Current repository automation is managed by `ops/configure_github_protection.py`.
+It configures required status checks, code-owner reviews, stale-review dismissal,
+conversation resolution, branch deletion prevention, and delete-branch-on-merge
+for `docs`, `SpellKard`, `Gensoulkyo`, `PhK-Protocol`, and `PhK-BattleServer`.
+After a PR is opened, GitHub auto-merge can be enabled on that PR once the
+required checks are present.
