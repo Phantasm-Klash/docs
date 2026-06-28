@@ -89,6 +89,32 @@ DEFAULT_SCOPES: dict[str, dict[str, Any]] = {
         ),
         "summary": "C++ battle server reconnect and result boundaries",
     },
+    "change-describer": {
+        "nickname": "Narrator",
+        "agent_id": "",
+        "repo": "docs",
+        "paths": (
+            "dev/progress.md",
+            "ops/agent_watchdog.py",
+            "ops/hourly_progress_mail.py",
+        ),
+        "summary": "中文功能变更摘要，替换邮件中的低可读性日志",
+        "continuous": True,
+        "kind": "summary",
+    },
+    "plan-auditor": {
+        "nickname": "Auditor",
+        "agent_id": "",
+        "repo": "docs",
+        "paths": (
+            "dev/gotouhou",
+            "dev/progress.md",
+            "docs/development-progress.md",
+        ),
+        "summary": "审计实现方向是否符合 docs/dev 开发计划，并给出 agent 提示词调整建议",
+        "continuous": True,
+        "kind": "audit",
+    },
 }
 
 
@@ -107,6 +133,10 @@ def iso(ts: dt.datetime) -> str:
 def parse_iso(value: str | None) -> dt.datetime | None:
     if not value:
         return None
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
 
 
 def snapshot_bucket(snapshot: dict[str, Any]) -> str | None:
@@ -117,10 +147,6 @@ def snapshot_bucket(snapshot: dict[str, Any]) -> str | None:
     if generated is not None:
         return hour_bucket(generated)
     return None
-    try:
-        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
-    except ValueError:
-        return None
 
 
 def run_command(command: list[str], cwd: Path, timeout: int = 20) -> tuple[int, str]:
@@ -427,6 +453,32 @@ def recent_log_mtime(root: Path, scope_id: str) -> float | None:
     return max(mtimes) if mtimes else None
 
 
+def report_path(root: Path, scope_id: str) -> Path | None:
+    mapping = {
+        "change-describer": root / ".agents" / "reports" / "change-summary-latest.md",
+        "plan-auditor": root / ".agents" / "reports" / "plan-audit-latest.md",
+    }
+    return mapping.get(scope_id)
+
+
+def collect_reports(root: Path) -> dict[str, Any]:
+    reports: dict[str, Any] = {}
+    for key, path in {
+        "change_summary": root / ".agents" / "reports" / "change-summary-latest.md",
+        "plan_audit": root / ".agents" / "reports" / "plan-audit-latest.md",
+    }.items():
+        if path.exists():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            reports[key] = {
+                "path": str(path),
+                "updated_at": iso(dt.datetime.fromtimestamp(path.stat().st_mtime, UTC)),
+                "text": text[:6000],
+            }
+        else:
+            reports[key] = {"path": str(path), "missing": True, "text": ""}
+    return reports
+
+
 def lock_path(root: Path, scope_id: str) -> Path:
     return root / ".agents" / "locks" / f"{scope_id}.lock.json"
 
@@ -450,6 +502,11 @@ def lock_status(path: Path, now: dt.datetime, stale_minutes: int = 240) -> dict[
 
 
 def fallback_prompt(scope_id: str, scope: dict[str, Any], reason: str) -> str:
+    if scope.get("kind") == "summary":
+        return summary_agent_prompt(reason)
+    if scope.get("kind") == "audit":
+        return audit_agent_prompt(reason)
+
     repo = scope["repo"]
     paths = "\n".join(f"- {path}" for path in scope.get("paths", ()))
     return f"""You are a gotouhou fallback Codex worker for scope `{scope_id}`.
@@ -475,6 +532,49 @@ Implementation requirements:
 - For network/protocol/server scopes, run `/root/gotouhou/docs/ops/protocol_audit_check.py`.
 - Commit and push to `main`, rebasing on `origin/main` if needed.
 - Write a concise final status to `/root/gotouhou/.agents/logs/{scope_id}-final.md`.
+"""
+
+
+def summary_agent_prompt(reason: str) -> str:
+    return f"""你是 gotouhou 持续中文摘要 agent。
+
+启动原因：{reason}
+工作区：/root/gotouhou
+
+任务：
+1. 检查五个子仓库最近一小时的提交、未提交改动、watchdog summary、agent roster 和 logs。
+2. 用简单中文生成面向项目负责人的功能完成摘要，不要粘贴冗长 git/status 原文。
+3. 输出 `/root/gotouhou/.agents/reports/change-summary-latest.md`。
+4. 同时更新 `/root/gotouhou/.agents/agent-prompts/change-describer.md`，记录你自己的最新提示词。
+5. 不修改任何 git 仓库文件，不提交，不推送。
+
+摘要格式：
+- 服务器状态：每个子仓库一句话。
+- 本小时完成：按功能写 3-8 条。
+- 阻塞/风险：只写需要人关注的事项。
+- 下一小时建议：最多 5 条。
+"""
+
+
+def audit_agent_prompt(reason: str) -> str:
+    return f"""你是 gotouhou 持续方向审计 agent。
+
+启动原因：{reason}
+工作区：/root/gotouhou
+
+任务：
+1. 阅读 `/root/gotouhou/docs/dev` 中的开发计划和 `/root/gotouhou/docs/dev/progress.md`。
+2. 对照五个子仓库当前状态，审计新增功能是否偏离当前阶段计划。
+3. 如果发现明显偏离，给出需要调整的 agent 方向和替换提示词；如果未偏离，明确说明。
+4. 输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`。
+5. 同时更新 `/root/gotouhou/.agents/agent-prompts/plan-auditor.md`，记录你自己的最新提示词。
+6. 不修改任何 git 仓库文件，不提交，不推送。
+
+审计格式：
+- 当前阶段判断。
+- 符合计划的新增功能。
+- 潜在偏离或优先级问题。
+- 建议调整的 agent 提示词：按 scope 给出可直接使用的中文提示词。
 """
 
 
@@ -608,6 +708,14 @@ def evaluate_scope(
         or diff_hash != previous_scope.get("diff_hash")
         or (log_mtime is not None and log_mtime != previous_log_mtime)
     )
+    scope_report_path = report_path(root, scope_id)
+    if scope_report_path and scope_report_path.exists():
+        report_mtime = scope_report_path.stat().st_mtime
+        if report_mtime != previous_scope.get("report_mtime"):
+            progress = True
+    else:
+        report_mtime = None
+
     if same_hour:
         stalled_count = int(previous_scope.get("stalled_count", 0))
     else:
@@ -616,7 +724,19 @@ def evaluate_scope(
     actions: list[dict[str, Any]] = []
     action_reason = ""
     should_start = False
-    if not record_exists:
+    completed = roster_entry.get("status") == "completed"
+    continuous = bool(scope.get("continuous"))
+    if completed and not continuous:
+        stalled_count = 0
+    if continuous:
+        last_started = parse_iso(roster_entry.get("last_started_at") if isinstance(roster_entry.get("last_started_at"), str) else None)
+        started_this_hour = bool(last_started and hour_bucket(last_started) == hour_bucket(now))
+        if not started_this_hour:
+            should_start = True
+            action_reason = "scheduled hourly continuous scope"
+    elif completed:
+        should_start = False
+    elif not record_exists:
         should_start = True
         action_reason = "missing active/completed roster record"
     elif stalled_count >= stalled_samples:
@@ -649,6 +769,7 @@ def evaluate_scope(
         "diff_hash": diff_hash,
         "scoped_dirty": scoped_text.splitlines()[:20],
         "log_mtime": log_mtime,
+        "report_mtime": report_mtime,
         "last_seen_at": roster_entry.get("last_seen_at"),
         "progress": progress,
         "stalled_count": stalled_count,
@@ -736,6 +857,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         "dry_run": bool(args.dry_run),
         "manager": manager,
         "systemd_mail": systemd_mail,
+        "reports": collect_reports(root),
         "repos": repos,
         "scopes": scopes,
         "actions": actions,

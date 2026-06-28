@@ -103,6 +103,7 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
     failures = summary.get("failures") if isinstance(summary.get("failures"), list) else []
     scopes = summary.get("scopes") if isinstance(summary.get("scopes"), dict) else {}
     systemd_mail = summary.get("systemd_mail") if isinstance(summary.get("systemd_mail"), dict) else {}
+    reports = summary.get("reports") if isinstance(summary.get("reports"), dict) else {}
 
     lines = [
         f"Watchdog generated: {summary.get('generated_at', '(unknown)')}",
@@ -122,7 +123,7 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
 
     if scopes:
         lines.append("")
-        lines.append("Agent scopes:")
+        lines.append("Agent 状态:")
         for scope_id, raw_scope in sorted(scopes.items()):
             scope = raw_scope if isinstance(raw_scope, dict) else {}
             action_count = len(scope.get("actions", [])) if isinstance(scope.get("actions"), list) else 0
@@ -134,6 +135,17 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
                 f"repo={scope.get('repo', 'unknown')} "
                 f"actions={action_count}"
             )
+
+    change_summary = reports.get("change_summary") if isinstance(reports.get("change_summary"), dict) else {}
+    plan_audit = reports.get("plan_audit") if isinstance(reports.get("plan_audit"), dict) else {}
+    if change_summary.get("text"):
+        lines.append("")
+        lines.append("中文功能摘要:")
+        lines.append(str(change_summary.get("text", "")).strip())
+    if plan_audit.get("text"):
+        lines.append("")
+        lines.append("计划方向审计:")
+        lines.append(str(plan_audit.get("text", "")).strip())
 
     if actions:
         lines.append("")
@@ -171,19 +183,24 @@ def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: 
     watchdog = read_json(watchdog_summary_path)
     repo_lines = [summarize_repo_brief(root, repo) for repo in repos]
     lines = [
-        "gotouhou hourly development brief",
+        "gotouhou 每小时开发简报",
         f"Generated: {now}",
         f"Workspace: {root}",
         f"Watchdog summary: {watchdog_summary_path}",
         "",
         *watchdog_lines(watchdog),
         "",
-        "Repositories:",
+        "服务器状态:",
         *repo_lines,
         "",
-        "Notes:",
-        "- Network/protocol changes remain gated by docs/ops/protocol_audit_check.py.",
-        "- SMTP credentials are host-local and are not printed by this report.",
+        "Agent 提示词位置:",
+        "- 当前运行/补救提示词: /root/gotouhou/.agents/prompts/",
+        "- 中文摘要 agent 提示词: /root/gotouhou/.agents/agent-prompts/change-describer.md",
+        "- 方向审计 agent 提示词: /root/gotouhou/.agents/agent-prompts/plan-auditor.md",
+        "",
+        "说明:",
+        "- 网络/协议相关变更继续由 docs/ops/protocol_audit_check.py 审计。",
+        "- SMTP 密码只在主机环境文件中读取，不会写入邮件正文或 git。",
     ]
     return "\n".join(lines)
 

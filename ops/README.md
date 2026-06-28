@@ -3,8 +3,9 @@
 ## Hourly progress mail and watchdog
 
 `agent_watchdog.py` runs before the hourly mailer. It samples the manager,
-the four active development scopes, the five child repositories, and systemd
-mail status. If a scope is missing it starts a fallback `codex exec` worker.
+the four development scopes, two continuous review scopes, the five child
+repositories, and systemd mail status. If a scope is missing it starts a
+fallback `codex exec` worker.
 If a scope has no commit, scoped diff, heartbeat, or log progress for two
 consecutive hourly samples, it starts a replacement worker. The watchdog writes
 host-local state under `/root/gotouhou/.agents/` and does not store secrets in
@@ -57,6 +58,9 @@ Operational status files:
 - `/root/gotouhou/.agents/agent-roster.json`: scope roster and fallback starts;
 - `/root/gotouhou/.agents/hourly-snapshots/*.json`: hourly samples;
 - `/root/gotouhou/.agents/last-watchdog-summary.json`: latest mail summary input;
+- `/root/gotouhou/.agents/reports/change-summary-latest.md`: Chinese feature summary for email;
+- `/root/gotouhou/.agents/reports/plan-audit-latest.md`: docs/dev direction audit and prompt suggestions;
+- `/root/gotouhou/.agents/agent-prompts/`: current persistent review-agent prompts;
 - `/root/gotouhou/.agents/logs/`: fallback `codex exec` logs;
 - `/root/gotouhou/.agents/locks/`: per-scope and per-repository lock files.
 
