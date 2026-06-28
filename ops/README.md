@@ -1,15 +1,30 @@
 # gotouhou Ops Helpers
 
-## Hourly progress mail
+## Hourly progress mail and watchdog
 
-`hourly_progress_mail.py` sends a multi-repository summary to `wjcwqc@qq.com`
-through `smtp.ym.163.com:25`. It reads SMTP credentials from environment
-variables and does not store secrets in git.
+`agent_watchdog.py` runs before the hourly mailer. It samples the manager,
+the four active development scopes, the five child repositories, and systemd
+mail status. If a scope is missing it starts a fallback `codex exec` worker.
+If a scope has no commit, scoped diff, heartbeat, or log progress for two
+consecutive hourly samples, it starts a replacement worker. The watchdog writes
+host-local state under `/root/gotouhou/.agents/` and does not store secrets in
+git.
+
+`hourly_progress_mail.py` sends a concise watchdog-aware summary to
+`wjcwqc@qq.com` through `smtp.ym.163.com:25`. It reads SMTP credentials from
+environment variables and does not print or store the password.
 
 Dry run:
 
 ```sh
+python3 ops/agent_watchdog.py --dry-run
 python3 ops/hourly_progress_mail.py --dry-run
+```
+
+Legacy full git report:
+
+```sh
+python3 ops/hourly_progress_mail.py --dry-run --full
 ```
 
 Systemd setup on the development host:
@@ -36,6 +51,20 @@ GOTOUHOU_MAIL_TO=wjcwqc@qq.com
 
 Use `GOTOUHOU_SMTP_STARTTLS=1` only if the target SMTP account supports STARTTLS
 on the configured port.
+
+Operational status files:
+
+- `/root/gotouhou/.agents/agent-roster.json`: scope roster and fallback starts;
+- `/root/gotouhou/.agents/hourly-snapshots/*.json`: hourly samples;
+- `/root/gotouhou/.agents/last-watchdog-summary.json`: latest mail summary input;
+- `/root/gotouhou/.agents/logs/`: fallback `codex exec` logs;
+- `/root/gotouhou/.agents/locks/`: per-scope and per-repository lock files.
+
+Validate units after installing:
+
+```sh
+systemd-analyze verify /etc/systemd/system/gotouhou-hourly-progress.service /etc/systemd/system/gotouhou-hourly-progress.timer
+```
 
 ## GitHub branch protection
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import smtplib
 import subprocess
@@ -19,6 +20,7 @@ from pathlib import Path
 
 
 DEFAULT_REPOS = ("docs", "SpellKard", "Gensoulkyo", "PhK-BattleServer", "PhK-Protocol")
+DEFAULT_WATCHDOG_SUMMARY = "/root/gotouhou/.agents/last-watchdog-summary.json"
 
 
 def run_git(repo: Path, args: list[str]) -> str:
@@ -36,6 +38,15 @@ def run_git(repo: Path, args: list[str]) -> str:
     except subprocess.SubprocessError as exc:
         return f"git command failed: {exc}"
     return completed.stdout.strip() or "(no output)"
+
+
+def read_json(path: Path) -> dict[str, object]:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def summarize_repo(root: Path, name: str) -> str:
@@ -67,6 +78,80 @@ def summarize_repo(root: Path, name: str) -> str:
     )
 
 
+def summarize_repo_brief(root: Path, name: str) -> str:
+    repo = root / name
+    if not repo.exists():
+        return f"- {name}: missing at {repo}"
+
+    branch = run_git(repo, ["branch", "--show-current"])
+    head = run_git(repo, ["rev-parse", "--short", "HEAD"])
+    status = run_git(repo, ["status", "--short", "--branch"])
+    commits = run_git(repo, ["log", "--since=1 hour ago", "--oneline", "--max-count=5"])
+    dirty = [line for line in status.splitlines() if line and not line.startswith("## ")]
+    upstream = next((line for line in status.splitlines() if line.startswith("## ")), "## status unavailable")
+    commit_text = "; ".join(commits.splitlines()) if commits and commits != "(no output)" else "no commits in last hour"
+    dirty_text = "clean" if not dirty else f"{len(dirty)} dirty: " + "; ".join(dirty[:5])
+    return f"- {name}: {branch or '(unknown)'} {head or '(no head)'} {upstream}; {dirty_text}; {commit_text}"
+
+
+def watchdog_lines(summary: dict[str, object]) -> list[str]:
+    if not summary:
+        return ["Watchdog: no summary file found"]
+
+    manager = summary.get("manager") if isinstance(summary.get("manager"), dict) else {}
+    actions = summary.get("actions") if isinstance(summary.get("actions"), list) else []
+    failures = summary.get("failures") if isinstance(summary.get("failures"), list) else []
+    scopes = summary.get("scopes") if isinstance(summary.get("scopes"), dict) else {}
+    systemd_mail = summary.get("systemd_mail") if isinstance(summary.get("systemd_mail"), dict) else {}
+
+    lines = [
+        f"Watchdog generated: {summary.get('generated_at', '(unknown)')}",
+        (
+            "Manager: "
+            f"mode={manager.get('mode', 'unknown')} "
+            f"stale={manager.get('stale', 'unknown')} "
+            f"age_seconds={manager.get('age_seconds', 'unknown')}"
+        ),
+        (
+            "Mail timer: "
+            f"active={systemd_mail.get('timer_active', 'unknown')} "
+            f"enabled={systemd_mail.get('timer_enabled', 'unknown')}"
+        ),
+        f"Actions: total={len(actions)} started={summary.get('started_count', 0)} failures={len(failures)}",
+    ]
+
+    if scopes:
+        lines.append("")
+        lines.append("Agent scopes:")
+        for scope_id, raw_scope in sorted(scopes.items()):
+            scope = raw_scope if isinstance(raw_scope, dict) else {}
+            action_count = len(scope.get("actions", [])) if isinstance(scope.get("actions"), list) else 0
+            lines.append(
+                "- "
+                f"{scope_id}: status={scope.get('status', 'unknown')} "
+                f"progress={scope.get('progress', 'unknown')} "
+                f"stalled={scope.get('stalled_count', 'unknown')} "
+                f"repo={scope.get('repo', 'unknown')} "
+                f"actions={action_count}"
+            )
+
+    if actions:
+        lines.append("")
+        lines.append("Watchdog actions:")
+        for action in actions[:10]:
+            if not isinstance(action, dict):
+                continue
+            result = action.get("result") if isinstance(action.get("result"), dict) else {}
+            lines.append(
+                "- "
+                f"{action.get('type', 'action')}: {action.get('reason', '')} "
+                f"started={result.get('started', False)} "
+                f"result={result.get('reason', result.get('pid', ''))}"
+            )
+
+    return lines
+
+
 def build_body(root: Path, repos: tuple[str, ...]) -> str:
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     sections = [summarize_repo(root, repo) for repo in repos]
@@ -79,6 +164,28 @@ def build_body(root: Path, repos: tuple[str, ...]) -> str:
             *sections,
         ]
     )
+
+
+def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: Path) -> str:
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    watchdog = read_json(watchdog_summary_path)
+    repo_lines = [summarize_repo_brief(root, repo) for repo in repos]
+    lines = [
+        "gotouhou hourly development brief",
+        f"Generated: {now}",
+        f"Workspace: {root}",
+        f"Watchdog summary: {watchdog_summary_path}",
+        "",
+        *watchdog_lines(watchdog),
+        "",
+        "Repositories:",
+        *repo_lines,
+        "",
+        "Notes:",
+        "- Network/protocol changes remain gated by docs/ops/protocol_audit_check.py.",
+        "- SMTP credentials are host-local and are not printed by this report.",
+    ]
+    return "\n".join(lines)
 
 
 def send_mail(
@@ -113,6 +220,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default="/root/gotouhou", help="workspace root")
     parser.add_argument("--repo", action="append", dest="repos", help="repo directory name")
+    parser.set_defaults(brief=True)
+    parser.add_argument("--brief", action="store_true", help="send a concise watchdog-aware report")
+    parser.add_argument("--full", action="store_false", dest="brief", help="send the legacy detailed git report")
+    parser.add_argument(
+        "--watchdog-summary",
+        default=os.getenv("GOTOUHOU_WATCHDOG_SUMMARY", DEFAULT_WATCHDOG_SUMMARY),
+        help="path to the watchdog JSON summary",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print the email body instead of sending")
     parser.add_argument("--smtp-host", default=os.getenv("GOTOUHOU_SMTP_HOST", "smtp.ym.163.com"))
     parser.add_argument("--smtp-port", type=int, default=int(os.getenv("GOTOUHOU_SMTP_PORT", "25")))
@@ -130,7 +245,10 @@ def main(argv: list[str]) -> int:
     repos = tuple(args.repos) if args.repos else DEFAULT_REPOS
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     subject = f"[gotouhou] hourly development update {now}"
-    body = build_body(root, repos)
+    if args.brief:
+        body = build_brief_body(root, repos, Path(args.watchdog_summary).resolve())
+    else:
+        body = build_body(root, repos)
 
     if args.dry_run:
         print(body)
