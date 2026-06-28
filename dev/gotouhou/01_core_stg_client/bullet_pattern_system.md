@@ -66,13 +66,22 @@
 
 `BossPatternCatalog` 维护可审计的类型族：
 
-- `radial`：环、交错环、多层螺旋、变形环。
+- `radial`：环、交错环、多层螺旋、变形环、加速环。
 - `aimed`：自机狙、扇形、刀弹、曲线 lane。
 - `random_seeded`：确定性随机弧、网格雨、收束云。
 - `delayed`：延迟分裂、开花、星爆。
 - `tracking`：有限诱导与 baitable turning。
 - `laser`：预警激光、扫射激光、胶囊长光束、持续擦弹激光。
 - `field`：幕墙、波形流、轨道释放、召唤器、反弹 lane。
+
+`boss_pattern_catalog_check.gd` 必须把上述清单落到可执行验证：
+
+- Boss 覆盖矩阵至少包含自机狙、n-way、环形、螺旋、激光、曲线、延迟变速、分裂/转化、随机种子和阶段脚本。
+- 每个 catalog pattern type 都要能通过 `BulletPatternLibrary.emit_pattern` 发射非空弹体，并在同 seed、同 tick、同 spawn index 下产生稳定签名。
+- 随机族 pattern 必须在 seed 变化时改变签名，但仍保持同 seed 可复现。
+- 激光族必须暴露线段/折线形状元数据，并对持续擦弹声明 `continuous_graze` 与 `graze_cooldown_ticks`。
+- 延迟、载体、分裂和转化类 pattern 必须能经 `BulletEngine.step_bullets` 产生子弹行为派生。
+- 阶段脚本必须由 `BossSpellbookModel` 覆盖三段以上 boss phase，并通过同一 emitter/engine 路径发射。
 
 移植其他开源弹幕游戏设计时，只迁移机制语法和可复现参数结构；不得复制受版权保护的关卡、角色、音乐、美术、专名或完整弹幕编排。
 当前迁移目录记录在 `BossPatternCatalog.OPEN_SOURCE_RECIPES`，每条 recipe 必须包含来源项目、许可证边界、映射到的原创 pattern types，以及 `mechanic_syntax_only` / `engine_concept_only` / `design_reference_only` 等非复制状态。
