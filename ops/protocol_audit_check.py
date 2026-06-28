@@ -23,6 +23,8 @@ REQUIRED_SHARED_MESSAGES = {
     "BattlePacketHeader": {"match_id", "player_id", "tick", "seq", "ack", "payload_type", "key_id", "nonce"},
     "BattleInput": {"match_id", "player_id", "tick", "seq", "direction_bits", "slow", "shoot", "bomb", "card_slot", "mode_action_id"},
     "BattleModeAction": {"match_id", "player_id", "tick", "seq", "action_id", "action_type", "payload_json", "client_result_authoritative"},
+    "BattleSnapshot": {"match_id", "snapshot_tick", "snapshot_kind", "state_hash", "players", "bullets_delta", "mode_state", "event_cursor"},
+    "BattleEvent": {"match_id", "cursor", "tick", "type", "player_id", "payload_json", "server_authoritative"},
     "BattleResult": {"match_id", "mode_id", "result_hash", "replay_id", "player_ids", "settled_at_ms"},
 }
 
@@ -67,9 +69,21 @@ def descriptor_messages(descriptor: dict[str, object]) -> dict[str, set[str]]:
 def parse_go_constants(path: Path) -> dict[str, str]:
     text = path.read_text(encoding="utf-8")
     constants: dict[str, str] = {}
-    for name, raw_value, int_value in re.findall(r"\b([A-Za-z][A-Za-z0-9_]*)\s*=\s*(?:(\"(?:\\.|[^\"])*\")|([0-9]+))", text):
-        constants[name] = json.loads(raw_value) if raw_value else int_value
+    for name, raw_value in re.findall(r"\b([A-Za-z][A-Za-z0-9_]*)\s*=\s*(\"(?:\\.|[^\"])*\"|[0-9]+|true|false)", text):
+        constants[name] = json.loads(raw_value) if raw_value.startswith('"') else raw_value
     return constants
+
+
+def fixture_scalar(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def cpp_constant_matches(cpp_manifest: str, cpp_name: str, value: str) -> bool:
+    quoted = f"{cpp_name} = {json.dumps(value, ensure_ascii=True)}"
+    literal = f"{cpp_name} = {value}"
+    return quoted in cpp_manifest or literal in cpp_manifest
 
 
 def gdscript_function(text: str, name: str) -> str:
@@ -87,6 +101,108 @@ def require_tokens(errors: list[str], text: str, tokens: list[str], label: str) 
     for token in tokens:
         if token not in text:
             fail(errors, f"{label} missing {token}")
+
+
+def check_battle_snapshot_event_contract(
+    errors: list[str],
+    fixture_path: Path,
+    go_constants: dict[str, str],
+    cpp_manifest: str,
+    gensoul_contract_test: Path,
+    gensoul_service_test: Path,
+    battle_server_tests: Path,
+) -> None:
+    fixture = load_json(fixture_path)
+    if not isinstance(fixture, dict):
+        fail(errors, "PhK-Protocol fixture is not a JSON object")
+        return
+    snapshot = fixture.get("battle_snapshot")
+    if not isinstance(snapshot, dict):
+        fail(errors, "PhK-Protocol fixture missing battle_snapshot")
+        snapshot = {}
+    event = fixture.get("battle_event")
+    if not isinstance(event, dict):
+        fail(errors, "PhK-Protocol fixture missing battle_event")
+        event = {}
+
+    expected = {
+        "BattleSnapshotMatchID": fixture_scalar(snapshot.get("match_id", "")),
+        "BattleSnapshotSnapshotTick": fixture_scalar(snapshot.get("snapshot_tick", "")),
+        "BattleSnapshotSnapshotKind": fixture_scalar(snapshot.get("snapshot_kind", "")),
+        "BattleSnapshotStateHash": fixture_scalar(snapshot.get("state_hash", "")),
+        "BattleSnapshotEventCursor": fixture_scalar(snapshot.get("event_cursor", "")),
+        "BattleEventMatchID": fixture_scalar(event.get("match_id", "")),
+        "BattleEventCursor": fixture_scalar(event.get("cursor", "")),
+        "BattleEventTick": fixture_scalar(event.get("tick", "")),
+        "BattleEventType": fixture_scalar(event.get("type", "")),
+        "BattleEventServerAuthoritative": fixture_scalar(event.get("server_authoritative", "")),
+    }
+    cpp_names = {
+        "BattleSnapshotMatchID": "kBattleSnapshotMatchId",
+        "BattleSnapshotSnapshotTick": "kBattleSnapshotSnapshotTick",
+        "BattleSnapshotSnapshotKind": "kBattleSnapshotSnapshotKind",
+        "BattleSnapshotStateHash": "kBattleSnapshotStateHash",
+        "BattleSnapshotEventCursor": "kBattleSnapshotEventCursor",
+        "BattleEventMatchID": "kBattleEventMatchId",
+        "BattleEventCursor": "kBattleEventCursor",
+        "BattleEventTick": "kBattleEventTick",
+        "BattleEventType": "kBattleEventType",
+        "BattleEventServerAuthoritative": "kBattleEventServerAuthoritative",
+    }
+    for go_name, value in expected.items():
+        actual = go_constants.get(go_name, "")
+        if actual != value:
+            fail(errors, f"Go manifest {go_name}={actual!r} does not match snapshot/event fixture {value!r}")
+        cpp_name = cpp_names[go_name]
+        if not cpp_constant_matches(cpp_manifest, cpp_name, value):
+            fail(errors, f"C++ manifest {cpp_name} does not match snapshot/event fixture {value!r}")
+
+    if event.get("server_authoritative") is not True:
+        fail(errors, "battle_event fixture must be server authoritative")
+    if not str(snapshot.get("state_hash", "")).startswith("sha256:"):
+        fail(errors, "battle_snapshot fixture state_hash must be sha256-prefixed")
+
+    gensoul_contract = gensoul_contract_test.read_text(encoding="utf-8")
+    for token in [
+        "phkv1.BattleSnapshotMatchID",
+        "phkv1.BattleSnapshotSnapshotTick",
+        "phkv1.BattleSnapshotSnapshotKind",
+        "phkv1.BattleSnapshotStateHash",
+        "phkv1.BattleSnapshotEventCursor",
+        "phkv1.BattleEventMatchID",
+        "phkv1.BattleEventCursor",
+        "phkv1.BattleEventTick",
+        "phkv1.BattleEventType",
+        "phkv1.BattleEventServerAuthoritative",
+    ]:
+        if token not in gensoul_contract:
+            fail(errors, f"Gensoulkyo protocol contract test missing shared snapshot/event constant {token}")
+
+    gensoul_service = gensoul_service_test.read_text(encoding="utf-8")
+    for token in [
+        "phkv1.BattleSnapshotStateHash",
+        "phkv1.BattleSnapshotEventCursor",
+        "phkv1.BattleEventType",
+        "phkv1.BattleEventServerAuthoritative",
+    ]:
+        if token not in gensoul_service:
+            fail(errors, f"Gensoulkyo service tests missing shared snapshot/event constant {token}")
+
+    battle_test = battle_server_tests.read_text(encoding="utf-8")
+    for token in [
+        "phk::v1::kBattleSnapshotMatchId",
+        "phk::v1::kBattleSnapshotSnapshotTick",
+        "phk::v1::kBattleSnapshotSnapshotKind",
+        "phk::v1::kBattleSnapshotStateHash",
+        "phk::v1::kBattleSnapshotEventCursor",
+        "phk::v1::kBattleEventMatchId",
+        "phk::v1::kBattleEventCursor",
+        "phk::v1::kBattleEventTick",
+        "phk::v1::kBattleEventType",
+        "phk::v1::kBattleEventServerAuthoritative",
+    ]:
+        if token not in battle_test:
+            fail(errors, f"PhK-BattleServer tests missing shared snapshot/event constant {token}")
 
 
 def check_battle_result_callback_contract(
@@ -145,9 +261,7 @@ def check_battle_result_callback_contract(
         if actual != value:
             fail(errors, f"Go manifest {go_name}={actual!r} does not match callback fixture {value!r}")
         cpp_name = cpp_names[go_name]
-        quoted = f"{cpp_name} = {json.dumps(value, ensure_ascii=True)}"
-        numeric = f"{cpp_name} = {value}"
-        if quoted not in cpp_manifest and numeric not in cpp_manifest:
+        if not cpp_constant_matches(cpp_manifest, cpp_name, value):
             fail(errors, f"C++ manifest {cpp_name} does not match callback fixture {value!r}")
 
     gensoul_test = gensoul_service_test.read_text(encoding="utf-8")
@@ -221,9 +335,7 @@ def check_battle_mode_action_contract(
         if actual != value:
             fail(errors, f"Go manifest {go_name}={actual!r} does not match mode action fixture {value!r}")
         cpp_name = cpp_names[go_name]
-        quoted = f"{cpp_name} = {json.dumps(value, ensure_ascii=True)}"
-        numeric = f"{cpp_name} = {value}"
-        if quoted not in cpp_manifest and numeric not in cpp_manifest:
+        if not cpp_constant_matches(cpp_manifest, cpp_name, value):
             fail(errors, f"C++ manifest {cpp_name} does not match mode action fixture {value!r}")
     if mode_action.get("client_result_authoritative", True):
         fail(errors, "battle_mode_action fixture must not be client result authoritative")
@@ -431,6 +543,15 @@ def check_cross_repo_contract(root: Path) -> int:
         fixture_path,
         go_constants,
         cpp_manifest,
+        gensoul_service_test,
+        battle_server_tests,
+    )
+    check_battle_snapshot_event_contract(
+        errors,
+        fixture_path,
+        go_constants,
+        cpp_manifest,
+        gensoul_contract_test,
         gensoul_service_test,
         battle_server_tests,
     )

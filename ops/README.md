@@ -74,8 +74,10 @@ python3 ops/protocol_audit_check.py
 ```
 
 The direct pass verifies generated protocol versions and required message
-fields, shared battle-result and mode-action fixtures, SpellKard descriptor and
-mode-action client builder authority guards, Gensoulkyo local protocol wiring,
-and Battle Server manifest/version/mode-action boundaries. It is safe to run on
-a development host with the sibling repositories checked out under
-`/root/gotouhou`.
+fields, shared battle-result, mode-action, battle-snapshot, and battle-event
+fixtures, SpellKard descriptor and mode-action client builder authority guards,
+Gensoulkyo local protocol wiring, and Battle Server manifest/version/mode-action
+boundaries. Snapshot/event fixture coverage is expected to fail until the
+corresponding PhK-Protocol manifest constants and downstream tests have landed
+in the sibling repositories. It is safe to run on a development host with the
+sibling repositories checked out under `/root/gotouhou`.
