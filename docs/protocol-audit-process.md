@@ -24,6 +24,11 @@ contract check:
 - `PhK-Protocol` `battle_snapshot` and `battle_event` fixtures must be exported
   as shared Go/C++ manifest constants and consumed by Gensoulkyo and
   PhK-BattleServer tests.
+- `PhK-Protocol` `golden_replay_summary` fixture values must be exported as
+  shared Go/C++ manifest constants and consumed by Gensoulkyo protocol/service
+  tests and PhK-BattleServer tests for `replay_id`, `match_id`,
+  `owner_user_id`, `input_count`, `event_count`, `input_stream_hash`,
+  `event_stream_hash`, `final_state_hash`, and `final_tick`.
 - `SpellKard` must load the shared descriptor and validate the minimal battle
   packet/ticket/result contract.
 - `SpellKard` mode-action client builders must submit only mode id, action
