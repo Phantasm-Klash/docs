@@ -28,6 +28,18 @@ REQUIRED_SHARED_MESSAGES = {
     "BattleResult": {"match_id", "mode_id", "result_hash", "replay_id", "player_ids", "settled_at_ms"},
 }
 
+GOLDEN_REPLAY_SUMMARY_FIELDS = (
+    "replay_id",
+    "match_id",
+    "owner_user_id",
+    "input_count",
+    "event_count",
+    "input_stream_hash",
+    "event_stream_hash",
+    "final_state_hash",
+    "final_tick",
+)
+
 
 def run(root: Path, repo: str, command: list[str]) -> int:
     cwd = root / repo
@@ -86,6 +98,26 @@ def cpp_constant_matches(cpp_manifest: str, cpp_name: str, value: str) -> bool:
     return quoted in cpp_manifest or literal in cpp_manifest
 
 
+def go_const_suffix(field_name: str) -> str:
+    parts = field_name.split("_")
+    converted: list[str] = []
+    for part in parts:
+        if part == "id":
+            converted.append("ID")
+        elif part == "json":
+            converted.append("JSON")
+        elif part == "ms":
+            converted.append("MS")
+        else:
+            converted.append(part[:1].upper() + part[1:])
+    return "".join(converted)
+
+
+def cpp_const_suffix(field_name: str) -> str:
+    parts = field_name.split("_")
+    return "".join(part[:1].upper() + part[1:] for part in parts)
+
+
 def gdscript_function(text: str, name: str) -> str:
     marker = f"func {name}("
     start = text.find(marker)
@@ -101,6 +133,63 @@ def require_tokens(errors: list[str], text: str, tokens: list[str], label: str) 
     for token in tokens:
         if token not in text:
             fail(errors, f"{label} missing {token}")
+
+
+def check_golden_replay_summary_contract(
+    errors: list[str],
+    fixture_path: Path,
+    go_constants: dict[str, str],
+    cpp_manifest: str,
+    gensoul_contract_test: Path,
+    gensoul_service_test: Path,
+    battle_server_tests: Path,
+) -> None:
+    fixture = load_json(fixture_path)
+    if not isinstance(fixture, dict):
+        fail(errors, "PhK-Protocol fixture is not a JSON object")
+        return
+    summary = fixture.get("golden_replay_summary")
+    if not isinstance(summary, dict):
+        fail(errors, "PhK-Protocol fixture missing golden_replay_summary")
+        return
+
+    expected: dict[str, str] = {}
+    for field in GOLDEN_REPLAY_SUMMARY_FIELDS:
+        if field not in summary:
+            fail(errors, f"PhK-Protocol golden_replay_summary missing {field}")
+            continue
+        expected[field] = fixture_scalar(summary.get(field))
+
+    for field, value in expected.items():
+        go_name = f"GoldenReplaySummary{go_const_suffix(field)}"
+        actual = go_constants.get(go_name, "")
+        if actual != value:
+            fail(errors, f"Go manifest {go_name}={actual!r} does not match golden replay summary fixture {value!r}")
+        cpp_name = f"kGoldenReplaySummary{cpp_const_suffix(field)}"
+        if not cpp_constant_matches(cpp_manifest, cpp_name, value):
+            fail(errors, f"C++ manifest {cpp_name} does not match golden replay summary fixture {value!r}")
+
+    for hash_field in ("input_stream_hash", "event_stream_hash", "final_state_hash"):
+        if hash_field in expected and not expected[hash_field].startswith("sha256:"):
+            fail(errors, f"golden_replay_summary {hash_field} must be sha256-prefixed")
+
+    gensoul_contract = gensoul_contract_test.read_text(encoding="utf-8")
+    for field in GOLDEN_REPLAY_SUMMARY_FIELDS:
+        token = f"phkv1.GoldenReplaySummary{go_const_suffix(field)}"
+        if token not in gensoul_contract:
+            fail(errors, f"Gensoulkyo protocol contract test missing golden replay summary constant {token}")
+
+    gensoul_service = gensoul_service_test.read_text(encoding="utf-8")
+    for field in GOLDEN_REPLAY_SUMMARY_FIELDS:
+        token = f"phkv1.GoldenReplaySummary{go_const_suffix(field)}"
+        if token not in gensoul_service:
+            fail(errors, f"Gensoulkyo service tests missing golden replay summary constant {token}")
+
+    battle_test = battle_server_tests.read_text(encoding="utf-8")
+    for field in GOLDEN_REPLAY_SUMMARY_FIELDS:
+        token = f"phk::v1::kGoldenReplaySummary{cpp_const_suffix(field)}"
+        if token not in battle_test:
+            fail(errors, f"PhK-BattleServer tests missing golden replay summary constant {token}")
 
 
 def check_battle_snapshot_event_contract(
@@ -547,6 +636,15 @@ def check_cross_repo_contract(root: Path) -> int:
         battle_server_tests,
     )
     check_battle_snapshot_event_contract(
+        errors,
+        fixture_path,
+        go_constants,
+        cpp_manifest,
+        gensoul_contract_test,
+        gensoul_service_test,
+        battle_server_tests,
+    )
+    check_golden_replay_summary_contract(
         errors,
         fixture_path,
         go_constants,

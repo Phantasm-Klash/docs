@@ -77,7 +77,11 @@ The direct pass verifies generated protocol versions and required message
 fields, shared battle-result, mode-action, battle-snapshot, and battle-event
 fixtures, SpellKard descriptor and mode-action client builder authority guards,
 Gensoulkyo local protocol wiring, and Battle Server manifest/version/mode-action
-boundaries. Snapshot/event fixture coverage is expected to fail until the
-corresponding PhK-Protocol manifest constants and downstream tests have landed
-in the sibling repositories. It is safe to run on a development host with the
-sibling repositories checked out under `/root/gotouhou`.
+boundaries. It also audits the golden replay summary fixture through
+PhK-Protocol Go/C++ manifests into Gensoulkyo protocol/service tests and
+PhK-BattleServer tests for replay id, match id, owner user id, input/event
+counts, input/event stream hashes, final state hash, and final tick.
+Snapshot/event and golden replay summary fixture coverage is expected to fail
+until the corresponding PhK-Protocol manifest constants and downstream tests
+have landed in the sibling repositories. It is safe to run on a development
+host with the sibling repositories checked out under `/root/gotouhou`.
