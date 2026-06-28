@@ -11,6 +11,20 @@ consecutive hourly samples, it starts a replacement worker. The watchdog writes
 host-local state under `/root/gotouhou/.agents/` and does not store secrets in
 git.
 
+Fallback workers are launched with Codex `/goal` sustained-target prompts. The
+watchdog reads per-agent API keys from the host-local `/root/.codex/keys` file
+or from `CODEX_AGENT_KEYS` when set. The file may contain `alias: value` or
+`alias=value` lines; key values are injected into child process environment only
+and are never written to JSON, logs, email, or git. Current default alias
+fallbacks are:
+
+- `spellkard-bullet`, `spellkard-ui`: `spellkard`;
+- `gensoulkyo-lobby`: `gensoulkyo`;
+- `phk-battle-server`, `change-describer`, `plan-auditor`, `manager`: `other`.
+
+Keep `/root/.codex/keys` mode `0600`; the hourly email reports only aliases and
+permission warnings.
+
 `hourly_progress_mail.py` sends a concise watchdog-aware summary to
 `wjcwqc@qq.com` through `smtp.ym.163.com:25`. It reads SMTP credentials from
 environment variables and does not print or store the password.

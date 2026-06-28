@@ -22,7 +22,26 @@ from typing import Any
 
 
 DEFAULT_REPOS = ("docs", "SpellKard", "Gensoulkyo", "PhK-BattleServer", "PhK-Protocol")
+DEFAULT_KEY_FILE = "/root/.codex/keys"
+GOAL_MODE = "codex-/goal-active"
 UTC = dt.timezone.utc
+
+KEY_ALIAS_PREFERENCES: dict[str, tuple[str, ...]] = {
+    "spellkard-bullet": ("spellkard-bullet", "spellkard", "other"),
+    "spellkard-ui": ("spellkard-ui", "spellkard", "other"),
+    "gensoulkyo-lobby": ("gensoulkyo-lobby", "gensoulkyo", "other"),
+    "phk-battle-server": ("phk-battle-server", "phk", "battle-server", "battle", "other"),
+    "change-describer": ("change-describer", "docs", "ops", "other"),
+    "plan-auditor": ("plan-auditor", "docs", "ops", "other"),
+    "manager": ("manager", "ops", "other"),
+}
+
+DEVELOPMENT_SCOPE_DIRECTIVES: dict[str, str] = {
+    "gensoulkyo-lobby": """你是 gotouhou 的 Gensoulkyo/Nakama 业务服 worker。工作区 `/root/gotouhou/Gensoulkyo`。当前主线是 Phase 3：Nakama + Go Runtime 负责账号、业务 RPC/WSS、大厅、匹配、battle allocation/ticket、结算验签和持久化；C++ BattleServer 负责高频战斗。请先阅读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/00_overview/network_security_and_server_split_plan.md`、`04_server_database_economy/server_stack.md`、`04_server_database_economy/client_server_connection.md`。本轮优先做：验证或补齐 Nakama SDK tag-build/注册 RPC 源码测试，推进 PostgreSQL audit sink 与 battle ticket/allocation/replay audit repository wiring，保持 HTTP fallback 只作为契约测试。禁止把高频 tick、Boss 伤害、奖励发放或客户端提交结果做成 Go HTTP 生产权威路径。完成后运行 Go 单元测试和相关 HTTP/Nakama handler 测试，提交前更新 `dev/progress.md`。""",
+    "phk-battle-server": """你是 gotouhou 的 PhK-BattleServer C++ worker。工作区 `/root/gotouhou/PhK-BattleServer`。当前任务必须服务 Phase 3：C++ BattleServer 是高频战斗权威模拟与结果签名边界，不能写库存、奖励、钱包或数据库。请先阅读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/02_networked_match/deterministic_lockstep_review.md`、`00_overview/network_security_and_server_split_plan.md`、`08_game_modes/mode_shared_server_interfaces.md`。本轮优先做真实生产依赖替换前的可测试边界：对接 PhK-Protocol 生成的 C++ protobuf 形状或更严格 manifest gate，补 Ed25519/X25519/KCP/AEAD 接口适配层测试，扩展最小 1v1 60Hz authoritative tick 的 replay/hash fixture。保持现有 scaffold 明确标注为开发占位。完成后运行 `tools/check_battle_server.py --build` 或等价 CMake/CTest。""",
+    "spellkard-ui": """你是 gotouhou 的 SpellKard Godot UI worker。工作区 `/root/gotouhou/SpellKard`。当前任务服务 Phase 6：把现有 `ClientMenuPageModel.page_spec()`、`UIScreenModel.page_layout()`、row section/ui_control metadata 落到更接近正式 Godot Control 场景的运行时界面。请先阅读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/05_content_assets_ui/ui_screens.md`、`00_overview/i18n_and_theme_policy.md`。本轮优先做 Play/Collection/Community/Player Settings 二级页的焦点、手柄/键鼠可操作、文本不溢出、素材 provenance 和 headless/static 验证。首页仍只保留 Play、Collection、Community、Player Settings 四入口；不要把 debug dashboard 重新暴露到首页；不要引入未授权东方/商业素材。""",
+    "spellkard-bullet": """你是 gotouhou 的 SpellKard 弹幕/Replay worker。工作区 `/root/gotouhou/SpellKard`。当前任务服务 Phase 2 与 Phase 8 的客户端展示侧：Boss spellbook、Pattern Lab 和 deterministic preview 只能作为本地练习、预览、性能预算和 Replay 展示合同，线上 Boss HP、伤害、奖励、结算仍由服务端权威。请先阅读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/01_core_stg_client/bullet_pattern_system.md`、`01_core_stg_client/performance_and_bullet_limits.md`、`08_game_modes/world_boss_mode.md`、`08_game_modes/instance_boss_mode.md`。本轮优先补 spellbook preview 的 golden fixture、Replay metadata 校验、弹量预算回归和 Godot headless 检查。不要继续无测试扩张 catalog 数量；不要复制商业符卡名、关卡脚本、音乐、美术或专有设定。""",
+}
 
 
 DEFAULT_SCOPES: dict[str, dict[str, Any]] = {
@@ -191,6 +210,104 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def parse_key_alias(line: str, index: int) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if ":" in stripped and not stripped.startswith("sk-"):
+        alias, value = stripped.split(":", 1)
+        alias = alias.strip()
+        value = value.strip()
+    elif "=" in stripped:
+        alias, value = stripped.split("=", 1)
+        alias = alias.strip()
+        value = value.strip()
+    else:
+        alias = f"key{index}"
+        value = stripped
+    if not alias or not value:
+        return None
+    return alias, value
+
+
+def load_keyring(key_file: Path) -> dict[str, Any]:
+    aliases: dict[str, str] = {}
+    try:
+        mode = key_file.stat().st_mode & 0o777
+        lines = key_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except FileNotFoundError:
+        return {"path": str(key_file), "exists": False, "aliases": {}, "permissions": None, "permission_warning": False}
+    except OSError as exc:
+        return {
+            "path": str(key_file),
+            "exists": True,
+            "aliases": {},
+            "permissions": None,
+            "permission_warning": True,
+            "error": str(exc),
+        }
+
+    index = 1
+    for line in lines:
+        parsed = parse_key_alias(line, index)
+        if parsed is None:
+            continue
+        alias, value = parsed
+        aliases[alias] = value
+        index += 1
+
+    return {
+        "path": str(key_file),
+        "exists": True,
+        "aliases": aliases,
+        "permissions": oct(mode),
+        "permission_warning": bool(mode & 0o077),
+    }
+
+
+def keyring_public_summary(keyring: dict[str, Any]) -> dict[str, Any]:
+    aliases = keyring.get("aliases") if isinstance(keyring.get("aliases"), dict) else {}
+    return {
+        "path": keyring.get("path", DEFAULT_KEY_FILE),
+        "exists": bool(keyring.get("exists")),
+        "aliases": sorted(str(alias) for alias in aliases),
+        "alias_count": len(aliases),
+        "permissions": keyring.get("permissions"),
+        "permission_warning": bool(keyring.get("permission_warning")),
+        "error": keyring.get("error"),
+    }
+
+
+def select_key_alias(scope_id: str, keyring: dict[str, Any]) -> dict[str, Any]:
+    aliases = keyring.get("aliases") if isinstance(keyring.get("aliases"), dict) else {}
+    preferences = KEY_ALIAS_PREFERENCES.get(scope_id, (scope_id, "other"))
+    for alias in preferences:
+        if alias in aliases:
+            return {
+                "scope": scope_id,
+                "alias": alias,
+                "source": "preferred",
+                "available": True,
+                "preferences": list(preferences),
+            }
+    return {
+        "scope": scope_id,
+        "alias": None,
+        "source": "missing",
+        "available": False,
+        "preferences": list(preferences),
+    }
+
+
+def selected_key_value(selection: dict[str, Any], keyring: dict[str, Any]) -> str | None:
+    alias = selection.get("alias")
+    aliases = keyring.get("aliases") if isinstance(keyring.get("aliases"), dict) else {}
+    if isinstance(alias, str):
+        value = aliases.get(alias)
+        return str(value) if value else None
+    return None
+
+
 def pid_alive(pid: int | None) -> bool:
     if not pid or pid <= 1:
         return False
@@ -251,16 +368,17 @@ def collect_manager(root: Path, now: dt.datetime, stale_minutes: int) -> dict[st
     if status_mtime is not None:
         age_seconds = max(0, int(now.timestamp() - status_mtime))
 
-    mode = "unknown"
+    stored_mode = "unknown"
     if status_path.exists():
         text = status_path.read_text(encoding="utf-8", errors="replace")
         for line in text.splitlines():
             if line.startswith("Mode:"):
-                mode = line.split(":", 1)[1].strip()
+                stored_mode = line.split(":", 1)[1].strip()
                 break
 
     return {
-        "mode": mode,
+        "mode": GOAL_MODE,
+        "stored_mode": stored_mode,
         "status_path": str(status_path),
         "heartbeat_path": str(heartbeat_path),
         "heartbeat": heartbeat if isinstance(heartbeat, dict) else {},
@@ -310,10 +428,11 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
     scopes = summary.get("scopes") if isinstance(summary.get("scopes"), dict) else {}
     repos = summary.get("repos") if isinstance(summary.get("repos"), dict) else {}
     actions = summary.get("actions") if isinstance(summary.get("actions"), list) else []
+    key_assignments = summary.get("key_assignments") if isinstance(summary.get("key_assignments"), dict) else {}
 
     heartbeat = {
         "updated_at": iso(now),
-        "mode": "goal-active",
+        "mode": GOAL_MODE,
         "source": "agent_watchdog",
         "summary_path": summary.get("summary_path"),
         "action_count": summary.get("action_count", 0),
@@ -326,22 +445,26 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
         "# gotouhou agent manager status",
         "",
         f"Updated: {iso(now)}",
-        "Mode: goal-active",
+        f"Mode: {GOAL_MODE}",
         "Goal: sustained multi-repository development for bullet engine, frontend/assets, Nakama lobby, and C++ battle server.",
+        "Codex goal mode: fallback manager and worker prompts explicitly enter `/goal` sustained-target mode.",
         "Manager workspace: /root/gotouhou",
         "Git topology: root .git is invalid/empty; child repositories are the commit roots.",
         "Encoding policy: UTF-8, Linux LF.",
+        "Key policy: agents receive per-scope keys from /root/.codex/keys; status files record aliases only.",
         "",
         "## Active goal scopes",
         "",
-        "| Scope | Repo | Status | Progress | Stalled | Head | Actions |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Scope | Repo | Status | Key alias | Progress | Stalled | Head | Actions |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for scope_id, raw_scope in sorted(scopes.items()):
         scope = raw_scope if isinstance(raw_scope, dict) else {}
+        key_assignment = key_assignments.get(scope_id) if isinstance(key_assignments.get(scope_id), dict) else {}
         lines.append(
             "| "
             f"{scope_id} | {scope.get('repo', '')} | {scope.get('status', '')} | "
+            f"{key_assignment.get('alias') or '(missing)'} | "
             f"{scope.get('progress', '')} | {scope.get('stalled_count', '')} | "
             f"{scope.get('head', '')} | {len(scope.get('actions', [])) if isinstance(scope.get('actions'), list) else 0} |"
         )
@@ -385,6 +508,8 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
             "",
             "- Hourly progress mail runs `agent_watchdog.py` before `hourly_progress_mail.py --brief`.",
             "- Missing scopes or stale manager heartbeat start a fallback `codex exec` worker.",
+            "- Fallback prompts are written as Codex `/goal` sustained-target instructions.",
+            "- Per-agent keys are injected through child process environment only; raw key values are never written to JSON, logs, mail, or git.",
             "- Scope stagnation uses the conservative two-sample rule.",
             "- Network/protocol changes remain gated by `/root/gotouhou/docs/ops/protocol_audit_check.py`.",
         ]
@@ -404,7 +529,7 @@ def default_roster(now: dt.datetime) -> dict[str, Any]:
             "source": "default-active-round-2",
             "last_seen_at": iso(now),
         }
-    return {"version": 1, "created_at": iso(now), "scopes": scopes, "manager": {"status": "goal-active"}}
+    return {"version": 1, "created_at": iso(now), "scopes": scopes, "manager": {"status": GOAL_MODE}}
 
 
 def merge_roster(roster: dict[str, Any], now: dt.datetime) -> dict[str, Any]:
@@ -501,31 +626,54 @@ def lock_status(path: Path, now: dt.datetime, stale_minutes: int = 240) -> dict[
     }
 
 
-def fallback_prompt(scope_id: str, scope: dict[str, Any], reason: str) -> str:
+def prompt_key_line(key_assignment: dict[str, Any]) -> str:
+    alias = key_assignment.get("alias")
+    if alias:
+        return f"Assigned Codex API key alias: `{alias}`. The raw key is injected as process environment only; never print, persist, mail, or commit it."
+    preferences = ", ".join(str(item) for item in key_assignment.get("preferences", []))
+    return f"No matching Codex API key alias was found. Expected aliases: {preferences or '(none)'}."
+
+
+def goal_prompt_preamble(scope_id: str, reason: str, key_assignment: dict[str, Any]) -> str:
+    return f"""Codex /goal mode requirement:
+- Treat this launch as a sustained `/goal` task, not a one-shot note.
+- Keep working until the scoped objective is genuinely handled, verified, committed when repository files changed, and pushed to `main`.
+- If interrupted, resume from local state, active locks, logs, and the latest `origin/main` without reverting others.
+- Scope id: `{scope_id}`.
+- Launch reason: {reason}
+- {prompt_key_line(key_assignment)}
+"""
+
+
+def fallback_prompt(scope_id: str, scope: dict[str, Any], reason: str, key_assignment: dict[str, Any]) -> str:
     if scope.get("kind") == "summary":
-        return summary_agent_prompt(reason)
+        return summary_agent_prompt(reason, key_assignment)
     if scope.get("kind") == "audit":
-        return audit_agent_prompt(reason)
+        return audit_agent_prompt(reason, key_assignment)
 
     repo = scope["repo"]
     paths = "\n".join(f"- {path}" for path in scope.get("paths", ()))
-    return f"""You are a gotouhou fallback Codex worker for scope `{scope_id}`.
+    directive = DEVELOPMENT_SCOPE_DIRECTIVES.get(scope_id, "")
+    scoped_directive = f"\n上次方向审计优化后的本 scope 提示词：\n{directive}\n" if directive else ""
+    return f"""{goal_prompt_preamble(scope_id, reason, key_assignment)}
 
-Reason for launch: {reason}
+You are a gotouhou fallback Codex worker for scope `{scope_id}`.
+
 Repository root: /root/gotouhou/{repo}
 Workspace root: /root/gotouhou
 
 You are not alone in the codebase. Do not revert user or other-agent edits.
-Before editing, inspect `git status --short --branch` and the scoped files.
+Start by syncing/rebasing from the latest `origin/main` for this repository, then inspect `git status --short --branch` and the scoped files.
 Before committing or pushing, acquire the repo git lock with:
 `flock /root/gotouhou/.agents/locks/git-{repo}.lock -c '<git commands>'`.
 
 Scope summary: {scope["summary"]}
 Allowed paths:
 {paths}
+{scoped_directive}
 
 Implementation requirements:
-- Continue the current main branch work for this scope.
+- Continue the current main branch work for this scope using the optimized direction above.
 - Keep changes inside the allowed paths.
 - Use UTF-8 and Linux LF.
 - Run the relevant local checks for the repository.
@@ -535,37 +683,50 @@ Implementation requirements:
 """
 
 
-def summary_agent_prompt(reason: str) -> str:
-    return f"""你是 gotouhou 持续中文摘要 agent。
+def summary_agent_prompt(reason: str, key_assignment: dict[str, Any]) -> str:
+    return f"""{goal_prompt_preamble("change-describer", reason, key_assignment)}
 
-启动原因：{reason}
+你是 gotouhou 持续中文摘要 agent（change-describer / Narrator）。
+
 工作区：/root/gotouhou
+运行模式：Codex `/goal` 持续目标模式。每小时被 watchdog 拉起时，都要完成一次独立摘要并写回状态；异常中断后从 `.agents` 最新状态恢复。
 
 任务：
-1. 检查五个子仓库最近一小时的提交、未提交改动、watchdog summary、agent roster 和 logs。
-2. 用简单中文生成面向项目负责人的功能完成摘要，不要粘贴冗长 git/status 原文。
+1. 检查五个子仓库当前状态、最近一小时提交、`/root/gotouhou/.agents/last-watchdog-summary.json`、`/root/gotouhou/.agents/agent-roster.json`、`/root/gotouhou/.agents/logs`。
+2. 把增改功能转写成简单中文描述，替换邮件里可读性差的原始日志。
 3. 输出 `/root/gotouhou/.agents/reports/change-summary-latest.md`。
 4. 同时更新 `/root/gotouhou/.agents/agent-prompts/change-describer.md`，记录你自己的最新提示词。
 5. 不修改任何 git 仓库文件，不提交，不推送。
 
 摘要格式：
-- 服务器状态：每个子仓库一句话。
-- 本小时完成：按功能写 3-8 条。
-- 阻塞/风险：只写需要人关注的事项。
-- 下一小时建议：最多 5 条。
+- 更新前服务器状态。
+- 更新后服务器状态。
+- 本小时完成内容。
+- 阻塞/风险。
+- 下一小时建议。
+
+写作要求：
+- 不泄露 SMTP 密码、token、私钥、API key 或任何凭据。
+- 可以写 key alias 和 agent scope，但不能写 key value。
+- 不粘贴冗长 git 原文、diff、日志和命令输出。
+- 用项目负责人能直接看懂的中文短句。
+- 如果发现 watchdog 误启动、重复启动或 key 分配缺失，必须写入风险。
+- 只允许写 `.agents/reports/change-summary-latest.md` 和 `.agents/agent-prompts/change-describer.md`；不要改五个子仓库里的文件。
 """
 
 
-def audit_agent_prompt(reason: str) -> str:
-    return f"""你是 gotouhou 持续方向审计 agent。
+def audit_agent_prompt(reason: str, key_assignment: dict[str, Any]) -> str:
+    return f"""{goal_prompt_preamble("plan-auditor", reason, key_assignment)}
 
-启动原因：{reason}
+你是 gotouhou 持续方向审计 agent（plan-auditor / Auditor）。
+
 工作区：/root/gotouhou
+运行模式：Codex `/goal` 持续目标模式。每小时被 watchdog 拉起时，都要完成一次方向审计并给出后续 agent 提示词；异常中断后从 `.agents` 最新状态恢复。
 
 任务：
-1. 阅读 `/root/gotouhou/docs/dev` 中的开发计划和 `/root/gotouhou/docs/dev/progress.md`。
-2. 对照五个子仓库当前状态，审计新增功能是否偏离当前阶段计划。
-3. 如果发现明显偏离，给出需要调整的 agent 方向和替换提示词；如果未偏离，明确说明。
+1. 阅读 `/root/gotouhou/docs/dev/progress.md` 和 `/root/gotouhou/docs/dev/gotouhou/**/*.md` 中当前阶段计划，重点关注 Phase 2/3/6/8、网络安全、Nakama、大厅、C++ BattleServer、Godot UI/弹幕。
+2. 检查五个子仓库 `docs`、`Gensoulkyo`、`SpellKard`、`PhK-Protocol`、`PhK-BattleServer` 的当前状态和最近提交，判断新增功能是否符合计划方向。
+3. 明确审计“符合/偏离/建议调整”。如果存在较大偏离，提出需要调整的 agent 方向和可直接替换的中文提示词；如果没有较大偏离，也要给出下一轮更合适的 agent 提示词。
 4. 输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`。
 5. 同时更新 `/root/gotouhou/.agents/agent-prompts/plan-auditor.md`，记录你自己的最新提示词。
 6. 不修改任何 git 仓库文件，不提交，不推送。
@@ -575,14 +736,24 @@ def audit_agent_prompt(reason: str) -> str:
 - 符合计划的新增功能。
 - 潜在偏离或优先级问题。
 - 建议调整的 agent 提示词：按 scope 给出可直接使用的中文提示词。
+
+要求：
+- 不泄露 SMTP 密码、token、私钥、API key 或任何凭据。
+- 可以写 key alias 和 agent scope，但不能写 key value。
+- 审计要覆盖 Phase 2/3/6/8、网络安全、Nakama、房间/大厅、C++ BattleServer、Godot UI/弹幕。
+- 结论必须明确“符合/偏离/建议调整”。
+- 提示词必须是中文，且可直接交给后续 worker 使用。
+- 最终只汇报写入路径、是否偏离、建议调整摘要。
 """
 
 
-def manager_prompt(reason: str) -> str:
-    return f"""You are the gotouhou fallback manager.
+def manager_prompt(reason: str, key_assignment: dict[str, Any]) -> str:
+    return f"""{goal_prompt_preamble("manager", reason, key_assignment)}
 
-Reason for launch: {reason}
+You are the gotouhou fallback manager.
+
 Workspace root: /root/gotouhou
+Mode: Codex `/goal` sustained-target mode.
 
 Inspect `/root/gotouhou/.agents/manager-status.md`, the five child repositories,
 and any active worker logs under `/root/gotouhou/.agents/logs`.
@@ -595,6 +766,9 @@ Ensure the four development scopes are covered:
 If a scope is missing, blocked, or stale, launch a scoped worker or continue the
 work directly without reverting unrelated edits. Keep `/root/gotouhou/.agents`
 updated. Commit and push only valid repository changes.
+
+Use the optimized direction from `/root/gotouhou/.agents/reports/plan-audit-latest.md`
+when deciding the next worker prompt. Keep key values secret; state only aliases.
 """
 
 
@@ -605,6 +779,8 @@ def start_background_codex(
     prompt: str,
     cwd: Path,
     codex_bin: str,
+    key_assignment: dict[str, Any],
+    key_value: str | None,
     dry_run: bool,
 ) -> dict[str, Any]:
     now = utcnow()
@@ -614,10 +790,19 @@ def start_background_codex(
     prompts_dir = agents_dir / "prompts"
     lock = lock_path(root, scope_id)
     current_lock = lock_status(lock, now)
+    key_alias = key_assignment.get("alias")
     if current_lock["alive"]:
-        return {"started": False, "reason": "lock-active", "lock": current_lock}
+        return {"started": False, "reason": "lock-active", "lock": current_lock, "key_alias": key_alias}
     if dry_run:
-        return {"started": False, "reason": "dry-run", "lock": current_lock}
+        return {"started": False, "reason": "dry-run", "lock": current_lock, "key_alias": key_alias}
+    if not key_value:
+        return {
+            "started": False,
+            "reason": "missing-key",
+            "lock": current_lock,
+            "key_alias": key_alias,
+            "key_preferences": key_assignment.get("preferences", []),
+        }
 
     locks_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -643,16 +828,20 @@ def start_background_codex(
         f"status=$?; echo '[watchdog] exited status='$status >> {quoted_log}; exit $status"
     )
     try:
+        env = os.environ.copy()
+        env["OPENAI_API_KEY"] = key_value
+        env["CODEX_API_KEY"] = key_value
         process = subprocess.Popen(
             ["/bin/sh", "-c", script],
             cwd=str(cwd),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=env,
             start_new_session=True,
         )
     except OSError as exc:
-        return {"started": False, "reason": f"spawn-failed: {exc}", "lock": current_lock}
+        return {"started": False, "reason": f"spawn-failed: {exc}", "lock": current_lock, "key_alias": key_alias}
 
     write_json(
         lock,
@@ -663,6 +852,7 @@ def start_background_codex(
             "prompt_path": str(prompt_path),
             "log_path": str(log_path),
             "cwd": str(cwd),
+            "key_alias": key_alias,
         },
     )
     return {
@@ -672,6 +862,7 @@ def start_background_codex(
         "prompt_path": str(prompt_path),
         "log_path": str(log_path),
         "lock": str(lock),
+        "key_alias": key_alias,
     }
 
 
@@ -686,6 +877,8 @@ def evaluate_scope(
     stalled_samples: int,
     same_hour: bool,
     codex_bin: str,
+    key_assignment: dict[str, Any],
+    key_value: str | None,
     dry_run: bool,
 ) -> dict[str, Any]:
     scoped_text, diff_hash = scoped_status(root, scope)
@@ -747,9 +940,11 @@ def evaluate_scope(
         launch = start_background_codex(
             root=root,
             scope_id=scope_id,
-            prompt=fallback_prompt(scope_id, scope, action_reason),
+            prompt=fallback_prompt(scope_id, scope, action_reason, key_assignment),
             cwd=root / repo,
             codex_bin=codex_bin,
+            key_assignment=key_assignment,
+            key_value=key_value,
             dry_run=dry_run,
         )
         actions.append({"type": "start-fallback-agent", "reason": action_reason, "result": launch})
@@ -758,6 +953,7 @@ def evaluate_scope(
             roster_entry["last_started_at"] = iso(now)
             roster_entry["last_start_reason"] = action_reason
             roster_entry["fallback_log_path"] = launch.get("log_path")
+            roster_entry["key_alias"] = launch.get("key_alias")
 
     return {
         "scope": scope_id,
@@ -774,6 +970,8 @@ def evaluate_scope(
         "progress": progress,
         "stalled_count": stalled_count,
         "lock": lock,
+        "key_alias": key_assignment.get("alias"),
+        "key_available": key_assignment.get("available"),
         "actions": actions,
     }
 
@@ -783,6 +981,8 @@ def maybe_start_manager(
     root: Path,
     manager: dict[str, Any],
     codex_bin: str,
+    key_assignment: dict[str, Any],
+    key_value: str | None,
     dry_run: bool,
 ) -> dict[str, Any] | None:
     if not manager.get("stale"):
@@ -795,9 +995,11 @@ def maybe_start_manager(
         "result": start_background_codex(
             root=root,
             scope_id="manager",
-            prompt=manager_prompt(reason),
+            prompt=manager_prompt(reason, key_assignment),
             cwd=root,
             codex_bin=codex_bin,
+            key_assignment=key_assignment,
+            key_value=key_value,
             dry_run=dry_run,
         ),
     }
@@ -811,12 +1013,16 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     snapshot_dir = agents_dir / "hourly-snapshots"
     roster_path = Path(args.roster).resolve() if args.roster else agents_dir / "agent-roster.json"
     summary_path = Path(args.summary_file).resolve() if args.summary_file else agents_dir / "last-watchdog-summary.json"
+    key_file = Path(args.key_file).resolve()
 
     if not args.dry_run:
         agents_dir.mkdir(parents=True, exist_ok=True)
         snapshot_dir.mkdir(parents=True, exist_ok=True)
 
     roster = merge_roster(read_json(roster_path, {}), now)
+    keyring = load_keyring(key_file)
+    key_assignments = {scope_id: select_key_alias(scope_id, keyring) for scope_id in DEFAULT_SCOPES}
+    key_assignments["manager"] = select_key_alias("manager", keyring)
     latest_snapshot = load_previous_snapshot(snapshot_dir)
     previous = load_previous_distinct_snapshot(snapshot_dir, current_bucket) or latest_snapshot
     same_hour = bool(latest_snapshot and snapshot_bucket(latest_snapshot) == current_bucket)
@@ -824,13 +1030,21 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     manager = collect_manager(root, now, args.manager_stale_minutes)
     systemd_mail = collect_systemd_mail(now)
     actions: list[dict[str, Any]] = []
-    manager_action = maybe_start_manager(root=root, manager=manager, codex_bin=args.codex_bin, dry_run=args.dry_run)
+    manager_action = maybe_start_manager(
+        root=root,
+        manager=manager,
+        codex_bin=args.codex_bin,
+        key_assignment=key_assignments["manager"],
+        key_value=selected_key_value(key_assignments["manager"], keyring),
+        dry_run=args.dry_run,
+    )
     if manager_action:
         actions.append(manager_action)
 
     scopes: dict[str, Any] = {}
     for scope_id, scope in DEFAULT_SCOPES.items():
         entry = roster["scopes"].setdefault(scope_id, {})
+        key_assignment = key_assignments[scope_id]
         scopes[scope_id] = evaluate_scope(
             root=root,
             scope_id=scope_id,
@@ -841,12 +1055,15 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             stalled_samples=args.stalled_samples,
             same_hour=same_hour,
             codex_bin=args.codex_bin,
+            key_assignment=key_assignment,
+            key_value=selected_key_value(key_assignment, keyring),
             dry_run=args.dry_run,
         )
         entry["last_seen_at"] = iso(now)
         entry["last_head"] = scopes[scope_id]["head"]
         entry["last_diff_hash"] = scopes[scope_id]["diff_hash"]
         entry["last_stalled_count"] = scopes[scope_id]["stalled_count"]
+        entry["key_alias"] = key_assignment.get("alias")
         actions.extend(scopes[scope_id]["actions"])
 
     summary = {
@@ -856,6 +1073,8 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         "root": str(root),
         "dry_run": bool(args.dry_run),
         "manager": manager,
+        "keyring": keyring_public_summary(keyring),
+        "key_assignments": key_assignments,
         "systemd_mail": systemd_mail,
         "reports": collect_reports(root),
         "repos": repos,
@@ -894,6 +1113,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--manager-stale-minutes", type=int, default=90)
     parser.add_argument("--stalled-samples", type=int, default=2)
     parser.add_argument("--codex-bin", default=os.getenv("CODEX_BIN", "/root/.local/bin/codex"))
+    parser.add_argument("--key-file", default=os.getenv("CODEX_AGENT_KEYS", DEFAULT_KEY_FILE))
     return parser.parse_args(argv)
 
 

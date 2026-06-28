@@ -104,6 +104,8 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
     scopes = summary.get("scopes") if isinstance(summary.get("scopes"), dict) else {}
     systemd_mail = summary.get("systemd_mail") if isinstance(summary.get("systemd_mail"), dict) else {}
     reports = summary.get("reports") if isinstance(summary.get("reports"), dict) else {}
+    keyring = summary.get("keyring") if isinstance(summary.get("keyring"), dict) else {}
+    key_assignments = summary.get("key_assignments") if isinstance(summary.get("key_assignments"), dict) else {}
 
     lines = [
         f"Watchdog generated: {summary.get('generated_at', '(unknown)')}",
@@ -120,6 +122,22 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
         ),
         f"Actions: total={len(actions)} started={summary.get('started_count', 0)} failures={len(failures)}",
     ]
+
+    if keyring:
+        warning = " permissions-too-open" if keyring.get("permission_warning") else ""
+        lines.append(
+            "Agent keys: "
+            f"path={keyring.get('path', '(unknown)')} "
+            f"aliases={keyring.get('alias_count', 0)} "
+            f"mode={keyring.get('permissions', 'unknown')}"
+            f"{warning}"
+        )
+    if key_assignments:
+        lines.append("")
+        lines.append("Agent key alias 分配:")
+        for scope_id, raw_assignment in sorted(key_assignments.items()):
+            assignment = raw_assignment if isinstance(raw_assignment, dict) else {}
+            lines.append(f"- {scope_id}: {assignment.get('alias') or '(missing)'}")
 
     if scopes:
         lines.append("")
