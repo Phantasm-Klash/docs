@@ -5,5 +5,4 @@ Description=Send gotouhou hourly development progress email
 Type=oneshot
 WorkingDirectory=/root/gotouhou/docs
 EnvironmentFile=-/etc/gotouhou/progress-mail.env
-ExecStartPre=-/usr/bin/python3 /root/gotouhou/docs/ops/agent_watchdog.py
-ExecStart=/usr/bin/python3 /root/gotouhou/docs/ops/hourly_progress_mail.py --brief
+ExecStart=/bin/sh /root/gotouhou/docs/ops/hourly_progress_runner.sh

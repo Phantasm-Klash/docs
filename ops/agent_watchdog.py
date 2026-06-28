@@ -23,7 +23,9 @@ from typing import Any
 
 DEFAULT_REPOS = ("docs", "SpellKard", "Gensoulkyo", "PhK-BattleServer", "PhK-Protocol")
 DEFAULT_KEY_FILE = "/root/.codex/keys"
+DEFAULT_GODOT_LINUX = "/root/gotouhou/Godot_v4.7-stable_linux.x86_64"
 GOAL_MODE = "codex-/goal-active"
+GITHUB_ORG = "Phantasm-Klash"
 UTC = dt.timezone.utc
 
 KEY_ALIAS_PREFERENCES: dict[str, tuple[str, ...]] = {
@@ -37,11 +39,19 @@ KEY_ALIAS_PREFERENCES: dict[str, tuple[str, ...]] = {
 }
 
 DEVELOPMENT_SCOPE_DIRECTIVES: dict[str, str] = {
-    "gensoulkyo-lobby": """你是 gotouhou 的 Gensoulkyo/Nakama 业务服 worker。工作区 `/root/gotouhou/Gensoulkyo`。当前主线是 Phase 3：Nakama + Go Runtime 负责账号、业务 RPC/WSS、大厅、匹配、battle allocation/ticket、结算验签和持久化；C++ BattleServer 负责高频战斗。请先阅读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/00_overview/network_security_and_server_split_plan.md`、`04_server_database_economy/server_stack.md`、`04_server_database_economy/client_server_connection.md`。本轮优先做：验证或补齐 Nakama SDK tag-build/注册 RPC 源码测试，推进 PostgreSQL audit sink 与 battle ticket/allocation/replay audit repository wiring，保持 HTTP fallback 只作为契约测试。禁止把高频 tick、Boss 伤害、奖励发放或客户端提交结果做成 Go HTTP 生产权威路径。完成后运行 Go 单元测试和相关 HTTP/Nakama handler 测试，提交前更新 `dev/progress.md`。""",
-    "phk-battle-server": """你是 gotouhou 的 PhK-BattleServer C++ worker。工作区 `/root/gotouhou/PhK-BattleServer`。当前任务必须服务 Phase 3：C++ BattleServer 是高频战斗权威模拟与结果签名边界，不能写库存、奖励、钱包或数据库。请先阅读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/02_networked_match/deterministic_lockstep_review.md`、`00_overview/network_security_and_server_split_plan.md`、`08_game_modes/mode_shared_server_interfaces.md`。本轮优先做真实生产依赖替换前的可测试边界：对接 PhK-Protocol 生成的 C++ protobuf 形状或更严格 manifest gate，补 Ed25519/X25519/KCP/AEAD 接口适配层测试，扩展最小 1v1 60Hz authoritative tick 的 replay/hash fixture。保持现有 scaffold 明确标注为开发占位。完成后运行 `tools/check_battle_server.py --build` 或等价 CMake/CTest。""",
-    "spellkard-ui": """你是 gotouhou 的 SpellKard Godot UI worker。工作区 `/root/gotouhou/SpellKard`。当前任务服务 Phase 6：把现有 `ClientMenuPageModel.page_spec()`、`UIScreenModel.page_layout()`、row section/ui_control metadata 落到更接近正式 Godot Control 场景的运行时界面。请先阅读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/05_content_assets_ui/ui_screens.md`、`00_overview/i18n_and_theme_policy.md`。本轮优先做 Play/Collection/Community/Player Settings 二级页的焦点、手柄/键鼠可操作、文本不溢出、素材 provenance 和 headless/static 验证。首页仍只保留 Play、Collection、Community、Player Settings 四入口；不要把 debug dashboard 重新暴露到首页；不要引入未授权东方/商业素材。""",
-    "spellkard-bullet": """你是 gotouhou 的 SpellKard 弹幕/Replay worker。工作区 `/root/gotouhou/SpellKard`。当前任务服务 Phase 2 与 Phase 8 的客户端展示侧：Boss spellbook、Pattern Lab 和 deterministic preview 只能作为本地练习、预览、性能预算和 Replay 展示合同，线上 Boss HP、伤害、奖励、结算仍由服务端权威。请先阅读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/01_core_stg_client/bullet_pattern_system.md`、`01_core_stg_client/performance_and_bullet_limits.md`、`08_game_modes/world_boss_mode.md`、`08_game_modes/instance_boss_mode.md`。本轮优先补 spellbook preview 的 golden fixture、Replay metadata 校验、弹量预算回归和 Godot headless 检查。不要继续无测试扩张 catalog 数量；不要复制商业符卡名、关卡脚本、音乐、美术或专有设定。""",
+    "gensoulkyo-lobby": """你是 gotouhou 的 Gensoulkyo/Nakama 业务服 worker。工作区 `/root/gotouhou/Gensoulkyo`。当前主线是 Phase 3：Nakama + Go Runtime 负责账号、业务 RPC/WSS、大厅、匹配、battle allocation/ticket、结算验签和持久化；C++ BattleServer 负责高频战斗。请先阅读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/00_overview/network_security_and_server_split_plan.md`、`04_server_database_economy/server_stack.md`、`04_server_database_economy/client_server_connection.md`。本轮优先做：验证或补齐 Nakama SDK tag-build/注册 RPC 源码测试，推进 PostgreSQL audit sink 与 battle ticket/allocation/replay audit repository wiring，保持 HTTP fallback 只作为契约测试。禁止把高频 tick、Boss 伤害、奖励发放或客户端提交结果做成 Go HTTP 生产权威路径。测试优先使用 Docker 容器化回归；如果仓库没有 Dockerfile/compose 或 `docker-compose` 不可用，运行 Go 单元测试和 HTTP/Nakama handler 测试并把 Docker 缺口写入最终状态。""",
+    "phk-battle-server": """你是 gotouhou 的 PhK-BattleServer C++ worker。工作区 `/root/gotouhou/PhK-BattleServer`。当前任务必须服务 Phase 3：C++ BattleServer 是高频战斗权威模拟与结果签名边界，不能写库存、奖励、钱包或数据库。请先阅读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/02_networked_match/deterministic_lockstep_review.md`、`00_overview/network_security_and_server_split_plan.md`、`08_game_modes/mode_shared_server_interfaces.md`。本轮优先做真实生产依赖替换前的可测试边界：对接 PhK-Protocol 生成的 C++ protobuf 形状或更严格 manifest gate，补 Ed25519/X25519/KCP/AEAD 接口适配层测试，扩展最小 1v1 60Hz authoritative tick 的 replay/hash fixture。保持现有 scaffold 明确标注为开发占位。测试优先使用 Docker 构建/回归；如果没有 Dockerfile/compose，运行 `tools/check_battle_server.py --build` 或等价 CMake/CTest 并记录 Docker 缺口。""",
+    "spellkard-ui": """你是 gotouhou 的 SpellKard Godot UI worker。工作区 `/root/gotouhou/SpellKard`。当前任务服务 Phase 6：把现有 `ClientMenuPageModel.page_spec()`、`UIScreenModel.page_layout()`、row section/ui_control metadata 落到更接近正式 Godot Control 场景的运行时界面。请先阅读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/05_content_assets_ui/ui_screens.md`、`00_overview/i18n_and_theme_policy.md`。本轮优先做 Play/Collection/Community/Player Settings 二级页的焦点、手柄/键鼠可操作、文本不溢出、素材 provenance 和 headless 验证。Godot Linux 可执行文件位于 `/root/gotouhou/Godot_v4.7-stable_linux.x86_64`；优先从 `/root/gotouhou/SpellKard/godot` 运行 `--headless --path . --script ../tools/client_ui_smoke_test.gd`、`asset_manifest_check.gd` 和必要的静态检查。服务器无显卡导致的纯渲染器/RenderingDevice 失败可以标记为环境 blocked，不算功能失败；但 GDScript parse/compile/type error、脚本加载失败、UI health 失败必须修复。首页仍只保留 Play、Collection、Community、Player Settings 四入口；不要把 debug dashboard 重新暴露到首页；不要引入未授权东方/商业素材。""",
+    "spellkard-bullet": """你是 gotouhou 的 SpellKard 弹幕/Replay worker。工作区 `/root/gotouhou/SpellKard`。当前任务服务 Phase 2 与 Phase 8 的客户端展示侧：Boss spellbook、Pattern Lab 和 deterministic preview 只能作为本地练习、预览、性能预算和 Replay 展示合同，线上 Boss HP、伤害、奖励、结算仍由服务端权威。请先阅读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/01_core_stg_client/bullet_pattern_system.md`、`01_core_stg_client/performance_and_bullet_limits.md`、`08_game_modes/world_boss_mode.md`、`08_game_modes/instance_boss_mode.md`。本轮优先补 spellbook preview 的 golden fixture、Replay metadata 校验、弹量预算回归和 Godot headless 检查。Godot Linux 可执行文件位于 `/root/gotouhou/Godot_v4.7-stable_linux.x86_64`；优先从 `/root/gotouhou/SpellKard/godot` 运行 `--headless --path . --script ../tools/boss_pattern_catalog_check.gd`、必要时运行 `client_smoke_test.gd` 和静态检查。服务器无显卡导致的纯渲染器/RenderingDevice 失败可以标记为环境 blocked，不算功能失败；但 GDScript parse/compile/type error、脚本加载失败、弹幕合同失败必须修复。不要继续无测试扩张 catalog 数量；不要复制商业符卡名、关卡脚本、音乐、美术或专有设定。""",
 }
+
+GIT_FLOW_PROMPT = """版本控制和 PR 流程：
+- 不直接在 `main` 开发。先 `git fetch --prune origin`，从最新 `origin/main` 创建 scope 分支，例如 `agent/<scope>/<YYYYMMDD-HHMM>`。
+- 阶段性提交：每个可验证阶段都要 commit，提交信息写清功能范围、验证方式和剩余风险。
+- 推送分支并创建 PR；PR 正文必须包含变更摘要、测试结果、阻塞风险、是否涉及协议/网络/安全、是否需要 docs/dev 方向调整。
+- 除非 manager 明确授权合并，否则不要直接推 `main`。如果仓库规则允许绕过，也优先保留 PR 和分支历史。
+- 提交或推送前使用 `/root/gotouhou/.agents/locks/git-<repo>.lock`，避免同仓并发冲突。
+"""
 
 
 DEFAULT_SCOPES: dict[str, dict[str, Any]] = {
@@ -182,6 +192,16 @@ def run_command(command: list[str], cwd: Path, timeout: int = 20) -> tuple[int, 
     except (OSError, subprocess.SubprocessError) as exc:
         return 127, str(exc)
     return completed.returncode, completed.stdout.strip()
+
+
+def run_json_command(command: list[str], cwd: Path, timeout: int = 30) -> Any:
+    code, output = run_command(command, cwd, timeout=timeout)
+    if code != 0 or not output:
+        return None
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError:
+        return None
 
 
 def run_git(repo: Path, args: list[str], timeout: int = 20) -> str:
@@ -348,6 +368,43 @@ def collect_repo(root: Path, repo_name: str, now: dt.datetime) -> dict[str, Any]
     }
 
 
+def collect_pull_requests(root: Path, now: dt.datetime) -> dict[str, Any]:
+    repos: dict[str, Any] = {}
+    for repo_name in DEFAULT_REPOS:
+        repo_root = root / repo_name
+        payload = run_json_command(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                f"{GITHUB_ORG}/{repo_name}",
+                "--state",
+                "open",
+                "--json",
+                "number,title,headRefName,baseRefName,author,isDraft,mergeStateStatus,url,updatedAt",
+            ],
+            repo_root if repo_root.exists() else root,
+            timeout=30,
+        )
+        if isinstance(payload, list):
+            repos[repo_name] = {
+                "repo": repo_name,
+                "open_count": len(payload),
+                "items": payload[:20],
+                "collected_at": iso(now),
+            }
+        else:
+            repos[repo_name] = {
+                "repo": repo_name,
+                "open_count": None,
+                "items": [],
+                "error": "gh pr list failed or returned invalid JSON",
+                "collected_at": iso(now),
+            }
+    return repos
+
+
 def scoped_status(root: Path, scope: dict[str, Any]) -> tuple[str, str]:
     repo = root / str(scope["repo"])
     paths = [str(path) for path in scope.get("paths", ())]
@@ -421,6 +478,115 @@ def collect_systemd_mail(now: dt.datetime) -> dict[str, Any]:
     }
 
 
+def find_docker_files(root: Path, repo_name: str) -> list[str]:
+    repo = root / repo_name
+    if not repo.exists():
+        return []
+    matches: list[str] = []
+    for pattern in ("Dockerfile", "Dockerfile.*", "*.Dockerfile", "docker-compose*.yml", "docker-compose*.yaml", "compose*.yml", "compose*.yaml"):
+        for path in repo.glob(pattern):
+            if path.is_file():
+                matches.append(str(path.relative_to(repo)))
+    return sorted(set(matches))
+
+
+def collect_runtime_environment(root: Path, now: dt.datetime, godot_bin: Path) -> dict[str, Any]:
+    godot_exists = godot_bin.exists()
+    godot_executable = os.access(godot_bin, os.X_OK) if godot_exists else False
+    godot_code, godot_output = (127, "missing")
+    if godot_exists and godot_executable:
+        godot_code, godot_output = run_command([str(godot_bin), "--version"], root, timeout=20)
+    docker_code, docker_output = run_command(["docker", "--version"], root, timeout=20)
+    compose_code, compose_output = run_command(["docker-compose", "--version"], root, timeout=20)
+    docker_files = {name: find_docker_files(root, name) for name in DEFAULT_REPOS}
+    return {
+        "collected_at": iso(now),
+        "godot_linux": {
+            "path": str(godot_bin),
+            "exists": godot_exists,
+            "executable": godot_executable,
+            "version_status": godot_code,
+            "version": godot_output.splitlines()[0] if godot_output else "",
+        },
+        "docker": {
+            "available": docker_code == 0,
+            "version": docker_output.splitlines()[0] if docker_output else "",
+            "docker_compose_available": compose_code == 0,
+            "docker_compose_version": compose_output.splitlines()[0] if compose_output else "",
+            "repo_files": docker_files,
+        },
+    }
+
+
+def pr_approval_checks(root: Path, repo_name: str, pr: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    if pr.get("isDraft"):
+        blockers.append("draft PR")
+    if pr.get("baseRefName") != "main":
+        blockers.append(f"base is {pr.get('baseRefName')}, not main")
+    if pr.get("mergeStateStatus") not in {"CLEAN", "HAS_HOOKS", "UNKNOWN"}:
+        blockers.append(f"merge state {pr.get('mergeStateStatus')}")
+    repo_root = root / repo_name
+    if repo_name in {"Gensoulkyo", "PhK-BattleServer", "PhK-Protocol", "SpellKard"}:
+        code, output = run_command(["python3", str(root / "docs" / "ops" / "protocol_audit_check.py")], root, timeout=120)
+        if code != 0:
+            blockers.append(f"protocol audit failed: {output[-500:]}")
+    if repo_name == "SpellKard":
+        godot = Path(DEFAULT_GODOT_LINUX)
+        if not godot.exists() or not os.access(godot, os.X_OK):
+            blockers.append("Godot Linux headless binary missing or not executable")
+    if repo_name in {"Gensoulkyo", "PhK-BattleServer"} and not find_docker_files(root, repo_name):
+        blockers.append("no Dockerfile/docker-compose files for server regression")
+    if not repo_root.exists():
+        blockers.append("local repository missing")
+    return blockers
+
+
+def maybe_approve_pull_requests(root: Path, pull_requests: dict[str, Any], approve: bool) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    if not approve:
+        return actions
+    for repo_name, raw_repo in sorted(pull_requests.items()):
+        repo_info = raw_repo if isinstance(raw_repo, dict) else {}
+        for raw_pr in repo_info.get("items", []):
+            pr = raw_pr if isinstance(raw_pr, dict) else {}
+            number = pr.get("number")
+            if not isinstance(number, int):
+                continue
+            blockers = pr_approval_checks(root, repo_name, pr)
+            if blockers:
+                actions.append(
+                    {
+                        "type": "pr-approval-skipped",
+                        "repo": repo_name,
+                        "number": number,
+                        "url": pr.get("url"),
+                        "blockers": blockers,
+                    }
+                )
+                continue
+            body = (
+                "watchdog route/code review passed: docs/dev direction checked, "
+                "local regression gates completed, no blocking PR metadata found."
+            )
+            code, output = run_command(
+                ["gh", "pr", "review", str(number), "--repo", f"{GITHUB_ORG}/{repo_name}", "--approve", "--body", body],
+                root / repo_name,
+                timeout=60,
+            )
+            actions.append(
+                {
+                    "type": "pr-approved" if code == 0 else "pr-approval-failed",
+                    "repo": repo_name,
+                    "number": number,
+                    "url": pr.get("url"),
+                    "status": code,
+                    "output": output[-1000:],
+                }
+            )
+    return actions
+
+
 def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -> None:
     agents_dir = root / ".agents"
     heartbeat_path = agents_dir / "manager-heartbeat.json"
@@ -429,6 +595,10 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
     repos = summary.get("repos") if isinstance(summary.get("repos"), dict) else {}
     actions = summary.get("actions") if isinstance(summary.get("actions"), list) else []
     key_assignments = summary.get("key_assignments") if isinstance(summary.get("key_assignments"), dict) else {}
+    runtime = summary.get("runtime") if isinstance(summary.get("runtime"), dict) else {}
+    godot = runtime.get("godot_linux") if isinstance(runtime.get("godot_linux"), dict) else {}
+    docker = runtime.get("docker") if isinstance(runtime.get("docker"), dict) else {}
+    pull_requests = summary.get("pull_requests") if isinstance(summary.get("pull_requests"), dict) else {}
 
     heartbeat = {
         "updated_at": iso(now),
@@ -452,6 +622,9 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
         "Git topology: root .git is invalid/empty; child repositories are the commit roots.",
         "Encoding policy: UTF-8, Linux LF.",
         "Key policy: agents receive per-scope keys from /root/.codex/keys; status files record aliases only.",
+        "Version policy: development work uses feature branches, staged commits, pull requests, and protected-main reviews by default.",
+        f"Godot Linux: {godot.get('path', DEFAULT_GODOT_LINUX)} exists={godot.get('exists')} executable={godot.get('executable')} version={godot.get('version', '')}",
+        f"Docker: available={docker.get('available')} docker-compose={docker.get('docker_compose_available')} version={docker.get('docker_compose_version', '')}",
         "",
         "## Active goal scopes",
         "",
@@ -487,6 +660,19 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
             f"{len(commits)} in last hour |"
         )
 
+    lines.extend(
+        [
+            "",
+            "## Pull requests",
+            "",
+            "| Repository | Open PRs |",
+            "| --- | --- |",
+        ]
+    )
+    for repo_name, raw_prs in sorted(pull_requests.items()):
+        prs = raw_prs if isinstance(raw_prs, dict) else {}
+        lines.append(f"| {repo_name} | {prs.get('open_count', 'unknown')} |")
+
     lines.extend(["", "## Watchdog actions", ""])
     if actions:
         for action in actions:
@@ -511,6 +697,7 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
             "- Fallback prompts are written as Codex `/goal` sustained-target instructions.",
             "- Per-agent keys are injected through child process environment only; raw key values are never written to JSON, logs, mail, or git.",
             "- Scope stagnation uses the conservative two-sample rule.",
+            "- Watchdog samples open PRs. With explicit `--approve-prs`, it reads code and docs/dev direction, runs gates, and approves only non-draft main-target PRs without blockers.",
             "- Network/protocol changes remain gated by `/root/gotouhou/docs/ops/protocol_audit_check.py`.",
         ]
     )
@@ -604,6 +791,230 @@ def collect_reports(root: Path) -> dict[str, Any]:
     return reports
 
 
+def collect_regression(root: Path) -> dict[str, Any]:
+    path = root / ".agents" / "checks" / "latest-regression.json"
+    payload = read_json(path, {})
+    if not isinstance(payload, dict) or not payload:
+        return {"path": str(path), "missing": True}
+    payload = dict(payload)
+    payload["path"] = str(path)
+    return payload
+
+
+def repo_status_sentence(repo_name: str, repo: dict[str, Any]) -> str:
+    dirty = int(repo.get("dirty_count", 0) or 0)
+    commits = repo.get("commits_last_hour") if isinstance(repo.get("commits_last_hour"), list) else []
+    dirty_text = "工作区干净" if dirty == 0 else f"{dirty} 个未提交项"
+    commit_text = "近一小时无新提交" if not commits else f"近一小时 {len(commits)} 个提交"
+    return f"- {repo_name}: {repo.get('branch', 'unknown')} {repo.get('head', '')}，{dirty_text}，{commit_text}。"
+
+
+def build_builtin_change_summary(summary: dict[str, Any]) -> str:
+    repos = summary.get("repos") if isinstance(summary.get("repos"), dict) else {}
+    scopes = summary.get("scopes") if isinstance(summary.get("scopes"), dict) else {}
+    actions = summary.get("actions") if isinstance(summary.get("actions"), list) else []
+    runtime = summary.get("runtime") if isinstance(summary.get("runtime"), dict) else {}
+    godot = runtime.get("godot_linux") if isinstance(runtime.get("godot_linux"), dict) else {}
+    docker = runtime.get("docker") if isinstance(runtime.get("docker"), dict) else {}
+    pull_requests = summary.get("pull_requests") if isinstance(summary.get("pull_requests"), dict) else {}
+    key_assignments = summary.get("key_assignments") if isinstance(summary.get("key_assignments"), dict) else {}
+    regression = summary.get("regression") if isinstance(summary.get("regression"), dict) else {}
+
+    open_pr_count = 0
+    for raw_prs in pull_requests.values():
+        prs = raw_prs if isinstance(raw_prs, dict) else {}
+        count = prs.get("open_count")
+        if isinstance(count, int):
+            open_pr_count += count
+
+    risk_lines: list[str] = []
+    if summary.get("started_count", 0):
+        risk_lines.append(f"- watchdog 本轮启动了 {summary.get('started_count')} 个 fallback/持续 agent，需要观察是否正常退出并清理 lock。")
+    if regression.get("missing"):
+        risk_lines.append("- 尚未找到最新回归检查 JSON，邮件只能报告环境能力，不能报告测试结果。")
+    elif not regression.get("ok", False):
+        failed = regression.get("failed") if isinstance(regression.get("failed"), list) else []
+        names = ", ".join(str(item.get("name")) for item in failed if isinstance(item, dict))
+        risk_lines.append(f"- 最新回归检查未通过: {names or 'unknown'}。")
+    active_locks = [scope_id for scope_id, raw_scope in scopes.items() if isinstance(raw_scope, dict) and (raw_scope.get("lock") or {}).get("alive")]
+    if active_locks:
+        risk_lines.append(f"- 当前仍有 active lock: {', '.join(active_locks)}。")
+    if not godot.get("exists") or not godot.get("executable"):
+        risk_lines.append("- Godot Linux headless 不可用，SpellKard 运行时验证会受阻。")
+    if not docker.get("available") or not docker.get("docker_compose_available"):
+        risk_lines.append("- Docker 或 docker-compose 不可用，服务端容器化回归会受阻。")
+    docker_files = docker.get("repo_files") if isinstance(docker.get("repo_files"), dict) else {}
+    for server_repo in ("Gensoulkyo", "PhK-BattleServer"):
+        if not docker_files.get(server_repo):
+            risk_lines.append(f"- {server_repo} 暂未发现 Dockerfile/docker-compose 文件，只能先用本地回归。")
+    missing_keys = [scope_id for scope_id, raw in key_assignments.items() if isinstance(raw, dict) and not raw.get("available")]
+    if missing_keys:
+        risk_lines.append(f"- 以下 scope 缺少 key alias: {', '.join(missing_keys)}。")
+    if open_pr_count == 0:
+        risk_lines.append("- 当前五个仓库没有打开的 PR；后续开发应走 feature branch + PR，不再直接推 main。")
+    if not risk_lines:
+        risk_lines.append("- 未发现新的阻塞风险。")
+
+    lines = [
+        "## 更新前服务器状态",
+        "",
+        "- 已从最新 watchdog 采样生成，不再依赖上一轮 agent 手写报告。",
+        "",
+        "## 更新后服务器状态",
+        "",
+        *(repo_status_sentence(name, repo if isinstance(repo, dict) else {}) for name, repo in sorted(repos.items())),
+        "",
+        "## 本小时完成内容",
+        "",
+        f"- watchdog 已采样 manager、agent、仓库、PR、Godot Linux、Docker 和 docker-compose 状态，采样时间 {summary.get('generated_at', '')}。",
+        f"- docs/ops 当前策略要求 feature branch、阶段性 commit、PR 审批流程，不再默认直接推 main。",
+        f"- Godot Linux: `{godot.get('path', DEFAULT_GODOT_LINUX)}`，exists={godot.get('exists')}，executable={godot.get('executable')}，version={godot.get('version', '')}。",
+        f"- Docker: available={docker.get('available')}，docker-compose={docker.get('docker_compose_available')}，version={docker.get('docker_compose_version', '')}。",
+        f"- 当前 open PR 总数: {open_pr_count}；PR 审批动作数: {sum(1 for action in actions if str(action.get('type', '')).startswith('pr-'))}。",
+        f"- 最新回归检查: ok={regression.get('ok', 'unknown')}，failed_count={regression.get('failed_count', 'unknown')}，generated_at={regression.get('generated_at', 'missing')}。",
+        "",
+        "## Agent 状态",
+        "",
+    ]
+    for scope_id, raw_scope in sorted(scopes.items()):
+        scope = raw_scope if isinstance(raw_scope, dict) else {}
+        lines.append(
+            f"- {scope_id}: status={scope.get('status')}，repo={scope.get('repo')}，"
+            f"progress={scope.get('progress')}，stalled={scope.get('stalled_count')}，"
+            f"lock_alive={(scope.get('lock') or {}).get('alive')}。"
+        )
+
+    lines.extend(["", "## 阻塞/风险", "", *risk_lines, "", "## 下一小时建议", ""])
+    lines.extend(
+        [
+            "- 新开发任务按 feature branch + PR 推进，并在 PR 中写明测试、风险、协议/网络/安全影响。",
+            "- SpellKard 改动优先用 Linux Godot headless 跑对应 smoke/check 脚本。",
+            "- 服务器无显卡导致的纯 Godot 渲染器失败可标记为 ignored/blocked；GDScript 编译、类型和脚本合同失败仍必须修复。",
+            "- Gensoulkyo 与 PhK-BattleServer 优先补 Dockerfile/docker-compose 回归入口，再跑服务端回归。",
+            "- watchdog 发现 PR 后应读取代码和 docs/dev 路线，满足检查才审批。",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
+    runtime = summary.get("runtime") if isinstance(summary.get("runtime"), dict) else {}
+    godot = runtime.get("godot_linux") if isinstance(runtime.get("godot_linux"), dict) else {}
+    docker = runtime.get("docker") if isinstance(runtime.get("docker"), dict) else {}
+    pull_requests = summary.get("pull_requests") if isinstance(summary.get("pull_requests"), dict) else {}
+    repos = summary.get("repos") if isinstance(summary.get("repos"), dict) else {}
+    regression = summary.get("regression") if isinstance(summary.get("regression"), dict) else {}
+
+    open_pr_count = 0
+    for raw_prs in pull_requests.values():
+        prs = raw_prs if isinstance(raw_prs, dict) else {}
+        count = prs.get("open_count")
+        if isinstance(count, int):
+            open_pr_count += count
+
+    direct_main_risks: list[str] = []
+    for repo_name, raw_repo in sorted(repos.items()):
+        repo = raw_repo if isinstance(raw_repo, dict) else {}
+        status = str(repo.get("status", ""))
+        commits = repo.get("commits_last_hour") if isinstance(repo.get("commits_last_hour"), list) else []
+        if repo.get("branch") == "main" and commits and open_pr_count == 0:
+            direct_main_risks.append(f"- {repo_name}: main 分支近一小时有提交但当前没有 open PR，需要确认是否为授权 hotfix。")
+
+    docker_files = docker.get("repo_files") if isinstance(docker.get("repo_files"), dict) else {}
+    flow_risks = list(direct_main_risks)
+    if open_pr_count == 0:
+        flow_risks.append("- 当前无 open PR；后续开发应补齐 feature branch + PR 轨迹。")
+    if not godot.get("exists") or not godot.get("executable"):
+        flow_risks.append("- Godot Linux headless 不可用，SpellKard 阶段验证不完整。")
+    if not docker.get("docker_compose_available"):
+        flow_risks.append("- `docker-compose` 不可用，服务端容器回归不完整。")
+    if regression.get("missing"):
+        flow_risks.append("- 未找到最新 regression JSON，说明邮件与 watchdog 还缺少自动测试结果输入。")
+    elif not regression.get("ok", False):
+        failed = regression.get("failed") if isinstance(regression.get("failed"), list) else []
+        names = ", ".join(str(item.get("name")) for item in failed if isinstance(item, dict))
+        flow_risks.append(f"- 最新自动回归未通过: {names or 'unknown'}。")
+    for server_repo in ("Gensoulkyo", "PhK-BattleServer"):
+        if not docker_files.get(server_repo):
+            flow_risks.append(f"- {server_repo}: 未发现 Dockerfile/docker-compose，服务端 Docker 回归入口仍缺失。")
+    if not flow_risks:
+        flow_risks.append("- 未发现当前流程阻塞。")
+
+    return "\n".join(
+        [
+            "# gotouhou 持续方向与流程审计报告",
+            "",
+            f"审计时间：{summary.get('generated_at', '')}",
+            "",
+            "## 当前阶段判断",
+            "",
+            "- 当前仍应按 Phase 3 主线推进协议、Nakama/Go 业务服、C++ BattleServer 权威边界；SpellKard 的 UI/弹幕工作服务 Phase 2/6/8 的客户端展示、练习、Replay 和验证合同。",
+            "- ops/watchdog 工作属于 Phase 6 testing/release ops，应服务调度、报告、验证和 PR 审批，不直接替代业务实现。",
+            "",
+            "## 符合计划的新增能力",
+            "",
+            "- watchdog 已采样 branch/PR、agent、Godot Linux、Docker 和 `docker-compose` 状态，邮件摘要可直接读取本轮最新报告。",
+            "- worker prompt 已纳入 feature branch、阶段性 commit、PR、Linux Godot headless、服务端 Docker/`docker-compose` 回归要求。",
+            "- PR 审批被定义为受控动作：读取代码和 docs/dev 路线、运行对应检查、确认无阻塞后才 `gh pr review --approve`；不自动合并。",
+            "",
+            "## 潜在偏离或优先级问题",
+            "",
+            *flow_risks,
+            "",
+            "## 结论",
+            "",
+            "- 符合：新增 ops 方向符合 Phase 6，但下一步必须把实际开发也迁移到 branch + PR 流程。",
+            "- 偏离：直接推 main、无阶段 commit、无 PR、无 Godot/Docker 回归入口都应视为流程偏离并写入邮件风险。",
+            "- 建议调整：manager/watchdog 继续读代码和路线后审批 PR；业务 worker 聚焦协议冻结、Nakama/数据库、C++ 真实依赖替换、SpellKard headless 运行时验证。",
+            "",
+            "## 建议调整的 agent 提示词",
+            "",
+            "- 所有开发 worker：必须从最新 `origin/main` 创建 feature branch，阶段性 commit，推分支，开 PR；PR 正文写测试、风险、协议/网络/安全影响。",
+            "- SpellKard worker：必须使用 `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` 运行相关 headless check。",
+            "- SpellKard worker：无显卡导致的纯渲染器错误可记录为环境 blocked；GDScript parse/compile/type error 和脚本合同失败不能忽略。",
+            "- 服务端 worker：优先使用 `docker-compose` 回归；缺 Dockerfile/compose 时运行本地回归并记录阻塞。",
+            "- watchdog/manager：发现 open PR 后读取 diff 和 docs/dev 路线，运行 gates，通过才审批 PR；不自动合并。",
+        ]
+    ) + "\n"
+
+
+def managed_change_describer_prompt() -> str:
+    return """你是 gotouhou 持续中文摘要 agent（change-describer / Narrator）。
+
+工作区：`/root/gotouhou`。运行模式：Codex `/goal` 持续目标模式。
+
+每轮必须读取最新 `/root/gotouhou/.agents/last-watchdog-summary.json`，并检查五个子仓库状态、branch/PR 状态、agent roster、locks、logs、Godot Linux、Docker 与 `docker-compose` 状态。输出简单中文摘要到 `/root/gotouhou/.agents/reports/change-summary-latest.md`，同时更新本提示词文件。
+
+摘要必须包含：更新前服务器状态、更新后服务器状态、本小时完成内容、Agent 状态、阻塞/风险、下一小时建议。
+
+必须写入风险：报告未更新、agent lock 残留、未走 feature branch + PR、Godot Linux headless 未跑、服务端 Docker/`docker-compose` 回归缺失、watchdog/邮件异常、key alias 缺失。服务器无显卡导致的纯 Godot 渲染器失败可以写为 ignored/blocked，不算功能失败；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败仍必须写为真实阻塞。不得泄露 SMTP 密码、token、私钥、API key 或任何凭据；可以写 key alias 和 scope，不能写 key value。只允许写 `.agents` 下指定报告和提示词，不修改 git 仓库，不提交，不推送。
+"""
+
+
+def managed_plan_auditor_prompt() -> str:
+    return """你是 gotouhou 持续方向审计 agent（plan-auditor / Auditor）。
+
+工作区：`/root/gotouhou`。运行模式：Codex `/goal` 持续目标模式。
+
+每轮读取 `/root/gotouhou/docs/dev/progress.md` 与 `/root/gotouhou/docs/dev/gotouhou/**/*.md`，再检查五个子仓库状态、branch/PR 形态、最近提交、最新 watchdog summary、Godot Linux headless 能力、Docker/`docker-compose` 回归能力和 open PR。判断新增功能与开发流程是否符合 Phase 2/3/6/8、网络安全、Nakama、大厅/房间、C++ BattleServer、Godot UI/弹幕路线。
+
+必须审计：是否缺阶段性 commit、是否直接推 main、是否缺 PR、PR 是否读完代码和路线后再审批、SpellKard 是否用 Linux Godot headless 验证、服务端是否使用 Docker/`docker-compose` 或记录缺口、邮件内容是否及时反映 agent 状态和阻塞风险。服务器无显卡导致的纯 Godot 渲染器失败可以忽略为环境 blocked；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败不能忽略。
+
+输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`，同时更新本提示词文件。只允许写 `.agents` 下指定文件，不修改 git 仓库，不提交，不推送。不得泄露凭据。结论必须明确“符合/偏离/建议调整”，并给出可直接交给后续 worker 的中文提示词。
+"""
+
+
+def write_managed_reports(root: Path, summary: dict[str, Any]) -> None:
+    reports_dir = root / ".agents" / "reports"
+    prompts_dir = root / ".agents" / "agent-prompts"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    (reports_dir / "change-summary-latest.md").write_text(build_builtin_change_summary(summary), encoding="utf-8", newline="\n")
+    (reports_dir / "plan-audit-latest.md").write_text(build_builtin_plan_audit(summary), encoding="utf-8", newline="\n")
+    (prompts_dir / "change-describer.md").write_text(managed_change_describer_prompt(), encoding="utf-8", newline="\n")
+    (prompts_dir / "plan-auditor.md").write_text(managed_plan_auditor_prompt(), encoding="utf-8", newline="\n")
+
+
 def lock_path(root: Path, scope_id: str) -> Path:
     return root / ".agents" / "locks" / f"{scope_id}.lock.json"
 
@@ -637,11 +1048,12 @@ def prompt_key_line(key_assignment: dict[str, Any]) -> str:
 def goal_prompt_preamble(scope_id: str, reason: str, key_assignment: dict[str, Any]) -> str:
     return f"""Codex /goal mode requirement:
 - Treat this launch as a sustained `/goal` task, not a one-shot note.
-- Keep working until the scoped objective is genuinely handled, verified, committed when repository files changed, and pushed to `main`.
+- Keep working until the scoped objective is genuinely handled, verified, committed on a feature branch when repository files changed, pushed, and represented by a pull request.
 - If interrupted, resume from local state, active locks, logs, and the latest `origin/main` without reverting others.
 - Scope id: `{scope_id}`.
 - Launch reason: {reason}
 - {prompt_key_line(key_assignment)}
+{GIT_FLOW_PROMPT}
 """
 
 
@@ -677,8 +1089,10 @@ Implementation requirements:
 - Keep changes inside the allowed paths.
 - Use UTF-8 and Linux LF.
 - Run the relevant local checks for the repository.
+- SpellKard scopes must use `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` for Linux headless checks when touching Godot scripts/scenes/assets.
+- Gensoulkyo and PhK-BattleServer scopes should prefer Docker/`docker-compose` regression where repository files exist; if no Dockerfile/compose exists, run local checks and record that Docker coverage is blocked.
 - For network/protocol/server scopes, run `/root/gotouhou/docs/ops/protocol_audit_check.py`.
-- Commit and push to `main`, rebasing on `origin/main` if needed.
+- Push the feature branch and create a PR. Do not push directly to `main` unless the manager explicitly authorizes an emergency hotfix.
 - Write a concise final status to `/root/gotouhou/.agents/logs/{scope_id}-final.md`.
 """
 
@@ -692,8 +1106,9 @@ def summary_agent_prompt(reason: str, key_assignment: dict[str, Any]) -> str:
 运行模式：Codex `/goal` 持续目标模式。每小时被 watchdog 拉起时，都要完成一次独立摘要并写回状态；异常中断后从 `.agents` 最新状态恢复。
 
 任务：
-1. 检查五个子仓库当前状态、最近一小时提交、`/root/gotouhou/.agents/last-watchdog-summary.json`、`/root/gotouhou/.agents/agent-roster.json`、`/root/gotouhou/.agents/logs`。
-2. 把增改功能转写成简单中文描述，替换邮件里可读性差的原始日志。
+1. 先读取最新 `/root/gotouhou/.agents/last-watchdog-summary.json`，再检查五个子仓库当前状态、最近一小时提交、branch/PR 状态、`/root/gotouhou/.agents/agent-roster.json`、locks、logs 和 reports 更新时间。
+2. 检查运行环境是否变化：Godot Linux `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` 是否可执行、Docker 和 `docker-compose` 是否可用、服务端仓库是否有 Dockerfile/compose。
+3. 把增改功能、agent 状态、阻塞风险、运行环境和版本管理状态转写成简单中文描述，替换邮件里可读性差的原始日志。
 3. 输出 `/root/gotouhou/.agents/reports/change-summary-latest.md`。
 4. 同时更新 `/root/gotouhou/.agents/agent-prompts/change-describer.md`，记录你自己的最新提示词。
 5. 不修改任何 git 仓库文件，不提交，不推送。
@@ -710,7 +1125,7 @@ def summary_agent_prompt(reason: str, key_assignment: dict[str, Any]) -> str:
 - 可以写 key alias 和 agent scope，但不能写 key value。
 - 不粘贴冗长 git 原文、diff、日志和命令输出。
 - 用项目负责人能直接看懂的中文短句。
-- 如果发现 watchdog 误启动、重复启动或 key 分配缺失，必须写入风险。
+- 如果发现 watchdog 误启动、重复启动、lock 残留、报告未更新、key 分配缺失、未走分支/PR、Godot/Docker 检查缺失，必须写入风险。
 - 只允许写 `.agents/reports/change-summary-latest.md` 和 `.agents/agent-prompts/change-describer.md`；不要改五个子仓库里的文件。
 """
 
@@ -725,8 +1140,9 @@ def audit_agent_prompt(reason: str, key_assignment: dict[str, Any]) -> str:
 
 任务：
 1. 阅读 `/root/gotouhou/docs/dev/progress.md` 和 `/root/gotouhou/docs/dev/gotouhou/**/*.md` 中当前阶段计划，重点关注 Phase 2/3/6/8、网络安全、Nakama、大厅、C++ BattleServer、Godot UI/弹幕。
-2. 检查五个子仓库 `docs`、`Gensoulkyo`、`SpellKard`、`PhK-Protocol`、`PhK-BattleServer` 的当前状态和最近提交，判断新增功能是否符合计划方向。
-3. 明确审计“符合/偏离/建议调整”。如果存在较大偏离，提出需要调整的 agent 方向和可直接替换的中文提示词；如果没有较大偏离，也要给出下一轮更合适的 agent 提示词。
+2. 检查五个子仓库 `docs`、`Gensoulkyo`、`SpellKard`、`PhK-Protocol`、`PhK-BattleServer` 的当前状态、branch/PR 形态、最近提交和最新 watchdog summary，判断新增功能是否符合计划方向。
+3. 检查开发流程是否偏离：是否缺少阶段性 commit、是否直接推 main、是否缺 PR、是否缺 Godot Linux headless 或 Docker/`docker-compose` 回归。
+4. 明确审计“符合/偏离/建议调整”。如果存在较大偏离，提出需要调整的 agent 方向和可直接替换的中文提示词；如果没有较大偏离，也要给出下一轮更合适的 agent 提示词。
 4. 输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`。
 5. 同时更新 `/root/gotouhou/.agents/agent-prompts/plan-auditor.md`，记录你自己的最新提示词。
 6. 不修改任何 git 仓库文件，不提交，不推送。
@@ -743,6 +1159,7 @@ def audit_agent_prompt(reason: str, key_assignment: dict[str, Any]) -> str:
 - 审计要覆盖 Phase 2/3/6/8、网络安全、Nakama、房间/大厅、C++ BattleServer、Godot UI/弹幕。
 - 结论必须明确“符合/偏离/建议调整”。
 - 提示词必须是中文，且可直接交给后续 worker 使用。
+- 后续 worker 提示词必须包含分支/PR/阶段性提交、Godot Linux headless、服务端 Docker/`docker-compose` 回归和邮件状态及时更新要求。
 - 最终只汇报写入路径、是否偏离、建议调整摘要。
 """
 
@@ -765,10 +1182,14 @@ Ensure the four development scopes are covered:
 
 If a scope is missing, blocked, or stale, launch a scoped worker or continue the
 work directly without reverting unrelated edits. Keep `/root/gotouhou/.agents`
-updated. Commit and push only valid repository changes.
+updated. Use branch + PR flow for repository changes; do not directly push main
+except for explicit emergency hotfixes authorized by the manager.
 
 Use the optimized direction from `/root/gotouhou/.agents/reports/plan-audit-latest.md`
 when deciding the next worker prompt. Keep key values secret; state only aliases.
+Make sure hourly mail content is based on the latest watchdog snapshot, locks,
+reports, branch/PR state, Godot Linux availability, and Docker/`docker-compose`
+test capability.
 """
 
 
@@ -1029,6 +1450,8 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     repos = {name: collect_repo(root, name, now) for name in DEFAULT_REPOS}
     manager = collect_manager(root, now, args.manager_stale_minutes)
     systemd_mail = collect_systemd_mail(now)
+    runtime = collect_runtime_environment(root, now, Path(args.godot_bin).resolve())
+    pull_requests = collect_pull_requests(root, now)
     actions: list[dict[str, Any]] = []
     manager_action = maybe_start_manager(
         root=root,
@@ -1066,6 +1489,10 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         entry["key_alias"] = key_assignment.get("alias")
         actions.extend(scopes[scope_id]["actions"])
 
+    actions.extend(maybe_approve_pull_requests(root, pull_requests, args.approve_prs))
+
+    reports = collect_reports(root)
+    regression = collect_regression(root)
     summary = {
         "version": 1,
         "generated_at": iso(now),
@@ -1076,7 +1503,10 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         "keyring": keyring_public_summary(keyring),
         "key_assignments": key_assignments,
         "systemd_mail": systemd_mail,
-        "reports": collect_reports(root),
+        "runtime": runtime,
+        "pull_requests": pull_requests,
+        "reports": reports,
+        "regression": regression,
         "repos": repos,
         "scopes": scopes,
         "actions": actions,
@@ -1092,6 +1522,8 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     if not args.dry_run:
+        write_managed_reports(root, summary)
+        summary["reports"] = collect_reports(root)
         snapshot_path = snapshot_dir / f"{now.strftime('%Y%m%dT%H%M%SZ')}.json"
         write_json(snapshot_path, summary)
         summary["snapshot_path"] = str(snapshot_path)
@@ -1114,6 +1546,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--stalled-samples", type=int, default=2)
     parser.add_argument("--codex-bin", default=os.getenv("CODEX_BIN", "/root/.local/bin/codex"))
     parser.add_argument("--key-file", default=os.getenv("CODEX_AGENT_KEYS", DEFAULT_KEY_FILE))
+    parser.add_argument("--godot-bin", default=os.getenv("GOTOUHOU_GODOT_BIN", DEFAULT_GODOT_LINUX))
+    parser.add_argument("--approve-prs", action="store_true", default=os.getenv("GOTOUHOU_WATCHDOG_APPROVE_PRS") == "1")
     return parser.parse_args(argv)
 
 

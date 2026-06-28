@@ -25,6 +25,28 @@ fallbacks are:
 Keep `/root/.codex/keys` mode `0600`; the hourly email reports only aliases and
 permission warnings.
 
+Development workers use feature branches and pull requests by default:
+
+- create a scoped branch from latest `origin/main`, for example
+  `agent/<scope>/<YYYYMMDD-HHMM>`;
+- commit each verified stage separately;
+- push the branch and open a PR with summary, tests, risks, protocol/network/security impact, and docs/dev direction notes;
+- avoid direct `main` pushes unless the manager explicitly declares an emergency hotfix.
+
+The watchdog samples open PRs across the five repositories. When explicitly
+enabled with `GOTOUHOU_WATCHDOG_APPROVE_PRS=1` or `--approve-prs`, it may read
+PR metadata, check docs/dev direction, run local gates, and approve non-draft
+`main` PRs without blockers via `gh pr review --approve`. It does not merge PRs.
+
+SpellKard workers should use the Linux Godot binary at
+`/root/gotouhou/Godot_v4.7-stable_linux.x86_64` for headless checks. Server
+workers should prefer Docker regression through `docker-compose`; if a server
+repo has no Dockerfile/compose files, the worker must run local regression and
+record the Docker gap in the report.
+Pure Godot renderer failures caused by a headless server without a GPU may be
+marked ignored/blocked. GDScript parse, compile, type, script-load, UI contract,
+or bullet contract failures are real regressions and must not be ignored.
+
 `hourly_progress_mail.py` sends a concise watchdog-aware summary to
 `wjcwqc@qq.com` through `smtp.ym.163.com:25`. It reads SMTP credentials from
 environment variables and does not print or store the password.
@@ -46,6 +68,7 @@ Systemd setup on the development host:
 
 ```sh
 sudo install -d -m 0750 /etc/gotouhou
+sudo install -m 0755 ops/hourly_progress_runner.sh /root/gotouhou/docs/ops/
 sudo install -m 0644 ops/gotouhou-hourly-progress.service /etc/systemd/system/
 sudo install -m 0644 ops/gotouhou-hourly-progress.timer /etc/systemd/system/
 sudo editor /etc/gotouhou/progress-mail.env
@@ -72,6 +95,8 @@ Operational status files:
 - `/root/gotouhou/.agents/agent-roster.json`: scope roster and fallback starts;
 - `/root/gotouhou/.agents/hourly-snapshots/*.json`: hourly samples;
 - `/root/gotouhou/.agents/last-watchdog-summary.json`: latest mail summary input;
+- `/root/gotouhou/.agents/watchdog-last-error.log`: last watchdog stderr when the runner had to send a failure mail;
+- `/root/gotouhou/.agents/checks/latest-regression.json`: latest Godot, protocol, and Docker/docker-compose regression result;
 - `/root/gotouhou/.agents/reports/change-summary-latest.md`: Chinese feature summary for email;
 - `/root/gotouhou/.agents/reports/plan-audit-latest.md`: docs/dev direction audit and prompt suggestions;
 - `/root/gotouhou/.agents/agent-prompts/`: current persistent review-agent prompts;
