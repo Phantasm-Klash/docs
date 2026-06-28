@@ -23,6 +23,10 @@ contract check:
 - `PhK-Protocol` descriptor, Go manifest, and C++ manifest versions must match.
 - `SpellKard` must load the shared descriptor and validate the minimal battle
   packet/ticket/result contract.
+- `SpellKard` mode-action client builders must submit only mode id, action
+  type, copied payload intent, and `client_result_authoritative=false` through
+  the Gensoulkyo mode-action endpoint; response handling may project server
+  state into UI models but must keep server authority explicit.
 - `Gensoulkyo` must depend on the local `PhK-Protocol` manifest and keep its
   protocol contract tests wired to shared version constants.
 - `PhK-BattleServer` must consume the generated C++ manifest for version,
@@ -54,6 +58,11 @@ conversation resolution, branch deletion prevention, and delete-branch-on-merge
 for `docs`, `SpellKard`, `Gensoulkyo`, `PhK-Protocol`, and `PhK-BattleServer`.
 After a PR is opened, GitHub auto-merge can be enabled on that PR once the
 required checks are present.
+
+Operational progress mail is intentionally host-local. `ops/hourly_progress_mail.py`
+can send an hourly multi-repository status summary when systemd timer units and
+SMTP environment variables are installed on the development host, but SMTP
+credentials are not part of the repository and the mailer is not a merge gate.
 
 Because the organization currently has a single visible member, branch
 protection keeps CODEOWNERS metadata but does not require a second approving

@@ -72,3 +72,10 @@ Battle Server checker, and a direct cross-repository compatibility pass across
 ```sh
 python3 ops/protocol_audit_check.py
 ```
+
+The direct pass verifies generated protocol versions and required message
+fields, shared battle-result and mode-action fixtures, SpellKard descriptor and
+mode-action client builder authority guards, Gensoulkyo local protocol wiring,
+and Battle Server manifest/version/mode-action boundaries. It is safe to run on
+a development host with the sibling repositories checked out under
+`/root/gotouhou`.
