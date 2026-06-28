@@ -250,6 +250,9 @@ def check_cross_repo_contract(root: Path) -> int:
     gensoul_contract_test = gensoul_root / "runtime" / "core" / "protocol_contract_test.go"
     gensoul_service_test = gensoul_root / "runtime" / "core" / "service_test.go"
     battle_version = battle_root / "include" / "phk" / "battle" / "version.hpp"
+    battle_simulation = battle_root / "include" / "phk" / "battle" / "simulation.hpp"
+    battle_server = battle_root / "include" / "phk" / "battle" / "server.hpp"
+    battle_simulation_impl = battle_root / "src" / "simulation.cpp"
     battle_server_tests = battle_root / "tests" / "battle_server_tests.cpp"
 
     descriptor = load_json(descriptor_path)
@@ -344,6 +347,17 @@ def check_cross_repo_contract(root: Path) -> int:
     for token in ["BattlePayloadType::ModeAction", "mode_action_empty_payload", "PayloadTypeName(phk::battle::BattlePayloadType::ModeAction)"]:
         if token not in battle_test:
             fail(errors, f"PhK-BattleServer mode action dispatch coverage missing {token}")
+    battle_simulation_text = battle_simulation.read_text(encoding="utf-8")
+    battle_server_text = battle_server.read_text(encoding="utf-8")
+    battle_simulation_impl_text = battle_simulation_impl.read_text(encoding="utf-8")
+    for token in ["ValidateModeAction", "AcceptModeAction", "InvalidModeAction"]:
+        if token not in battle_simulation_text:
+            fail(errors, f"PhK-BattleServer simulation mode action boundary missing {token}")
+    if "AcceptModeAction" not in battle_server_text:
+        fail(errors, "PhK-BattleServer facade missing AcceptModeAction")
+    for token in ["mode_action_client_result_forbidden", "AccumulateAcceptedModeAction", "event_stream_hash_"]:
+        if token not in battle_simulation_impl_text:
+            fail(errors, f"PhK-BattleServer simulation mode action implementation missing {token}")
 
     if errors:
         for error in errors:
