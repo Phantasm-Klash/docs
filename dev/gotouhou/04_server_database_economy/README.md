@@ -4,8 +4,9 @@
 
 ## 目标
 
-- Nakama + Go Runtime + PostgreSQL 开发环境。
-- 账号、会话、匹配和实时对局。
+- Nakama + Go Runtime + PostgreSQL 业务开发环境。
+- 账号、会话、匹配、房间、业务 WSS 和 C++ Battle Server 战斗分配。
+- ECDHE + KCP/UDP + protobuf + ChaCha20-Poly1305 战斗链路。
 - 卡牌、背包、卡组、掉落宝箱、奖励和活动。
 - 可审计经济流水。
 

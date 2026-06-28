@@ -18,13 +18,39 @@ Umbrella repository for:
 
 Server repository for:
 
-- authoritative match runtime;
-- lobby, matchmaking, and session services;
+- Nakama/Go business runtime;
+- lobby, room, matchmaking, and session services;
+- inventory, decks, chests, rewards, activity, leaderboard, and battle ticket services;
 - database migrations;
-- replay and audit metadata;
+- battle result verification plus replay and audit metadata;
 - self-hosted deployment notes.
 
-Initial directories are present but mostly empty until implementation decisions are finalized.
+Current implementation contains a Go HTTP MVP with in-memory authority for sessions, inventory, decks, card upgrades, chests, matchmaking, room codes, match input, snapshots, events, reconnect, settlement, rematch, replay audit, rewards, activity, battle server allocation/tickets, and mode slices. PostgreSQL migrations, Nakama business RPC/WSS binding, production C++ Battle Server integration, production deployment, and full shared rule extraction are still pending. Nakama remains the business server core; Go match simulation is a contract/fallback path, not the long-term production high-frequency battle runtime.
+
+## PhK-Protocol
+
+Planned shared protocol repository for:
+
+- protobuf schemas;
+- business secure envelope definitions;
+- battle ticket structures;
+- ruleset schemas;
+- generated Go/C++/client bindings;
+- compatibility fixtures and golden replay inputs;
+- fixed-point battle units, 60Hz v0.1 tick contract, canonical state hash, and battle result signature contracts.
+
+This repository should be open source and versioned before production C++ Battle Server migration begins. Draft schemas and manifest/descriptor bridges already exist; full generated Go/C++/Godot protobuf bindings are still pending.
+
+## PhK-BattleServer
+
+Planned C++ combat server repository for:
+
+- ECDHE + KCP/UDP + protobuf + ChaCha20-Poly1305 battle transport;
+- authoritative 60Hz PVP, battle royale, world Boss, and instance Boss tick simulation;
+- snapshot, event, reconnect, replay-stream, and signed battle result generation;
+- performance and latency tests.
+
+This repository should be open source for the base combat rules. It must not contain Steam SDK files, commercial drop strategies, or official private deployment secrets. Current implementation is a C++ skeleton with packet/ticket/result structural guards; real KCP, crypto, protobuf, deterministic simulation, and golden replay validation are pending.
 
 ## SpellKard
 
@@ -37,5 +63,14 @@ Client repository for:
 - theme and asset pipeline;
 - local tools and tests.
 
-Initial directories are present but mostly empty until the first Godot prototype is created.
+Current implementation contains a Godot 4.7 local STG prototype with bullet math/pattern bases, practice stages, Pattern Lab, characters, cards/decks/chests, replay, UI row models, i18n/theme/accessibility/input/audio settings, Gensoulkyo HTTP contract projection, and headless validation tools. Final visual scenes, production assets, and polished online UX are still pending.
 
+## Closed Private Repositories
+
+Private repositories are planned for:
+
+- `PhK-SteamAdapter`: Steamworks SDK, Steam auth, ownership verification, Steam Inventory, Workshop, achievements, and market integration.
+- `PhK-CommerceOps`: official products, cosmetic/item sale configuration, commercial inventory mapping, drop rates, fraud controls, ban linkage, and sensitive operations configuration.
+- `PhK-OfficialDeploy`: official certificates, keys, infrastructure, observability, and production deployment policies.
+
+The open-source release should remain self-hostable without these private repositories.

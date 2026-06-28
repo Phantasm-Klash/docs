@@ -14,9 +14,11 @@
 - `terminology_mapping.md`：STG 术语到系统功能的映射。
 - `tech_stack.md`：Godot、Nakama、PostgreSQL 及备选技术。
 - `open_source_boundary.md`：GitHub 开源内容、闭源 Steam 商业层和服务器版本边界。
+- `network_security_and_server_split_plan.md`：Nakama/Go 业务服务器、C++ Battle Server、业务 HTTPS/WSS 安全 envelope、战斗 ECDHE/KCP/protobuf/ChaCha20、仓库拆分和迁移计划。
 - `i18n_and_theme_policy.md`：基础文本、东方主题文本和多套美术资源的替换策略。
 - `asset_and_license_policy.md`：开源素材授权政策。
 - `roadmap.md`：阶段性开发和验收条件。
+- `../02_networked_match/deterministic_lockstep_review.md`：确定性帧同步路线复盘、当前客户端/服务端/协议能力检查和迁移验收顺序。
 
 ## 验收标准
 

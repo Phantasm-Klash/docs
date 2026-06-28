@@ -4,6 +4,8 @@
 
 - match_id。
 - ruleset_version。
+- protocol_version。
+- tick_rate。
 - server_seed。
 - player_ids。
 - deck_snapshots。
@@ -11,6 +13,9 @@
 - card_events。
 - major_state_hashes。
 - final_result。
+- battle_server_build_id。
+- mode_config_hash。
+- signed_result_key_id。
 
 ## 下载与播放
 
@@ -21,6 +26,8 @@
 ## 权威性
 
 线上 Replay 不采信客户端本地模拟结果。客户端只负责播放服务端记录。
+
+Replay 的确定性验收以 C++ Battle Server 的 canonical state hash 为准。客户端播放可以插值和补帧，但不能改变输入流、事件流和结算结果。
 
 ## 隐私
 

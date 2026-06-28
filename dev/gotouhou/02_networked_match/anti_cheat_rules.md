@@ -22,9 +22,11 @@
 
 - 输入 tick 必须单调。
 - seq 不能重复或大幅跳跃。
+- ack 只能确认已下发的服务端包或快照，不能推动服务端 tick。
 - 同一 tick 不能提交互斥操作。
 - card_slot 必须在手牌范围内。
 - Bomb 必须有资源。
+- 过早输入进入缓冲；迟到输入按 Replay 记录的 fallback 规则处理，客户端不能用位置修正来弥补迟到输入。
 
 ## 状态检查
 
@@ -46,6 +48,13 @@
 - 大逃杀：客户端不能声明 3 选 1 候选卡，只能提交选择。
 - 世界 Boss：客户端不能提交伤害结果、Boss 剩余血量或世界通告。
 - 副本 Boss：客户端不能提交通关结果或星级结果。
+
+## 战斗结果检查
+
+- 客户端不能提交 `BattleResult`。
+- C++ Battle Server 生成 `SignedBattleResult`，包含 match id、mode id、player ids、result hash、replay id、settled_at_ms 和 key id。
+- Nakama/Go 业务服验证签名、match allocation、ruleset/protocol 版本、幂等键和 result hash 后才写库发奖。
+- 重复提交只返回幂等结果，不重复结算资产。
 
 ## 处罚层级
 

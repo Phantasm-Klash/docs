@@ -15,9 +15,9 @@
 }
 ```
 
-## Match Handler
+## Battle Runtime Interfaces
 
-所有模式共用权威 match handler 框架：
+所有模式共用权威战斗运行时接口。生产热路径由 C++ Battle Server 实现；Nakama/Go 负责模式资格、匹配/房间、battle ticket、配置下发、结算验签和持久化：
 
 - `InitModeState`。
 - `ValidateJoin`。
