@@ -1,0 +1,5 @@
+# Documentation, audit workflows, and operations helpers require owner review.
+/.github/ @wjcwqc
+/docs/ @wjcwqc
+/dev/ @wjcwqc
+/ops/ @wjcwqc
