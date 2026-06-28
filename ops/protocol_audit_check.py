@@ -165,6 +165,74 @@ def check_battle_result_callback_contract(
             fail(errors, f"PhK-BattleServer tests missing shared callback constant {token}")
 
 
+def check_battle_mode_action_contract(
+    errors: list[str],
+    fixture_path: Path,
+    go_constants: dict[str, str],
+    cpp_manifest: str,
+    gensoul_service_test: Path,
+    battle_server_tests: Path,
+) -> None:
+    fixture = load_json(fixture_path)
+    if not isinstance(fixture, dict):
+        fail(errors, "PhK-Protocol fixture is not a JSON object")
+        return
+    mode_action = fixture.get("battle_mode_action")
+    if not isinstance(mode_action, dict):
+        fail(errors, "PhK-Protocol fixture missing battle_mode_action")
+        return
+    expected = {
+        "BattleModeActionMatchID": str(mode_action.get("match_id", "")),
+        "BattleModeActionPlayerID": str(mode_action.get("player_id", "")),
+        "BattleModeActionActionID": str(mode_action.get("action_id", "")),
+        "BattleModeActionActionType": str(mode_action.get("action_type", "")),
+        "BattleModeActionPayloadJSON": str(mode_action.get("payload_json", "")),
+        "BattleModeActionTick": str(mode_action.get("tick", "")),
+        "BattleModeActionSeq": str(mode_action.get("seq", "")),
+    }
+    cpp_names = {
+        "BattleModeActionMatchID": "kBattleModeActionMatchId",
+        "BattleModeActionPlayerID": "kBattleModeActionPlayerId",
+        "BattleModeActionActionID": "kBattleModeActionActionId",
+        "BattleModeActionActionType": "kBattleModeActionActionType",
+        "BattleModeActionPayloadJSON": "kBattleModeActionPayloadJson",
+        "BattleModeActionTick": "kBattleModeActionTick",
+        "BattleModeActionSeq": "kBattleModeActionSeq",
+    }
+    for go_name, value in expected.items():
+        actual = go_constants.get(go_name, "")
+        if actual != value:
+            fail(errors, f"Go manifest {go_name}={actual!r} does not match mode action fixture {value!r}")
+        cpp_name = cpp_names[go_name]
+        quoted = f"{cpp_name} = {json.dumps(value, ensure_ascii=True)}"
+        numeric = f"{cpp_name} = {value}"
+        if quoted not in cpp_manifest and numeric not in cpp_manifest:
+            fail(errors, f"C++ manifest {cpp_name} does not match mode action fixture {value!r}")
+    if mode_action.get("client_result_authoritative", True):
+        fail(errors, "battle_mode_action fixture must not be client result authoritative")
+
+    gensoul_test = gensoul_service_test.read_text(encoding="utf-8")
+    for token in [
+        "phkv1.BattleModeActionPayloadJSON",
+        "phkv1.BattleModeActionActionType",
+    ]:
+        if token not in gensoul_test:
+            fail(errors, f"Gensoulkyo mode action test missing shared fixture constant {token}")
+
+    battle_test = battle_server_tests.read_text(encoding="utf-8")
+    for token in [
+        "phk::v1::kBattleModeActionMatchId",
+        "phk::v1::kBattleModeActionPlayerId",
+        "phk::v1::kBattleModeActionSeq",
+        "phk::v1::kBattleModeActionTick",
+        "phk::v1::kBattleModeActionActionId",
+        "phk::v1::kBattleModeActionActionType",
+        "phk::v1::kBattleModeActionPayloadJson",
+    ]:
+        if token not in battle_test:
+            fail(errors, f"PhK-BattleServer mode action test missing shared fixture constant {token}")
+
+
 def check_cross_repo_contract(root: Path) -> int:
     errors: list[str] = []
     protocol_root = root / "PhK-Protocol"
@@ -177,6 +245,7 @@ def check_cross_repo_contract(root: Path) -> int:
     go_manifest_path = protocol_root / "gen" / "go" / "phk" / "v1" / "manifest.go"
     cpp_manifest_path = protocol_root / "gen" / "cpp" / "phk" / "v1" / "manifest.hpp"
     spell_descriptor_model = spell_root / "godot" / "scripts" / "protocol_descriptor_model.gd"
+    spell_api_model = spell_root / "godot" / "scripts" / "gensoulkyo_api_model.gd"
     gensoul_go_mod = gensoul_root / "go.mod"
     gensoul_contract_test = gensoul_root / "runtime" / "core" / "protocol_contract_test.go"
     gensoul_service_test = gensoul_root / "runtime" / "core" / "service_test.go"
@@ -224,6 +293,14 @@ def check_cross_repo_contract(root: Path) -> int:
         gensoul_service_test,
         battle_server_tests,
     )
+    check_battle_mode_action_contract(
+        errors,
+        fixture_path,
+        go_constants,
+        cpp_manifest,
+        gensoul_service_test,
+        battle_server_tests,
+    )
 
     messages = descriptor_messages(descriptor)
     for message, fields in REQUIRED_SHARED_MESSAGES.items():
@@ -246,6 +323,10 @@ def check_cross_repo_contract(root: Path) -> int:
     for token in ["BATTLE_PAYLOAD_TYPE_MODE_ACTION", "mode_action_field_missing"]:
         if token not in spell_text:
             fail(errors, f"SpellKard protocol descriptor mode action gate missing {token}")
+    spell_api_text = spell_api_model.read_text(encoding="utf-8")
+    for token in ["mode_action_request", '"client_result_authoritative": false']:
+        if token not in spell_api_text:
+            fail(errors, f"SpellKard mode action request authority guard missing {token}")
 
     go_mod = gensoul_go_mod.read_text(encoding="utf-8")
     if "github.com/phantasm-klash/phk-protocol" not in go_mod or "../PhK-Protocol" not in go_mod:
