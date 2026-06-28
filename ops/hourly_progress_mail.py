@@ -182,6 +182,7 @@ def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: 
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     watchdog = read_json(watchdog_summary_path)
     repo_lines = [summarize_repo_brief(root, repo) for repo in repos]
+    agent_prompt_lines = build_agent_prompt_lines(root)
     lines = [
         "gotouhou 每小时开发简报",
         f"Generated: {now}",
@@ -198,11 +199,37 @@ def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: 
         "- 中文摘要 agent 提示词: /root/gotouhou/.agents/agent-prompts/change-describer.md",
         "- 方向审计 agent 提示词: /root/gotouhou/.agents/agent-prompts/plan-auditor.md",
         "",
+        *agent_prompt_lines,
+        "",
         "说明:",
         "- 网络/协议相关变更继续由 docs/ops/protocol_audit_check.py 审计。",
         "- SMTP 密码只在主机环境文件中读取，不会写入邮件正文或 git。",
     ]
     return "\n".join(lines)
+
+
+def build_agent_prompt_lines(root: Path) -> list[str]:
+    prompt_dir = root / ".agents" / "agent-prompts"
+    configured = (
+        ("change-describer", prompt_dir / "change-describer.md"),
+        ("plan-auditor", prompt_dir / "plan-auditor.md"),
+    )
+    lines = ["Agent 提示词内容:"]
+    for name, path in configured:
+        if not path.exists():
+            lines.append(f"- {name}: 未找到 {path}")
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+        if len(text) > 1200:
+            text = text[:1200].rstrip() + "\n...(已截断)"
+        lines.append(f"### {name}\n{text}")
+    prompts_dir = root / ".agents" / "prompts"
+    if prompts_dir.exists():
+        recent = sorted(prompts_dir.glob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)[:8]
+        if recent:
+            lines.append("### 最近补救/运行提示词文件")
+            lines.extend(f"- {path.name}" for path in recent)
+    return lines
 
 
 def send_mail(
