@@ -11,4 +11,5 @@ dist/
 build/
 .cache/
 .vite/
-
+__pycache__/
+*.py[cod]

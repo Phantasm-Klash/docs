@@ -45,6 +45,8 @@
 
 高频输入流可保存为压缩 blob 或外部对象存储引用，避免数据库行过大。
 
+C++ Battle Server 迁移期会随结算提交 replay summary：输入流 hash、事件流 hash、最终 state hash、final_tick、input_count 和 event_count。Nakama/Go 入库时应把这些摘要与 signed result、battle_server_build_id 和 mode_config_hash 一起保存，用于排查 replay 缺失、重复结算和跨语言确定性差异。
+
 ## 对局结束
 
 - 更新最终 score、graze_count、hit_count、result。

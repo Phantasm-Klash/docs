@@ -1,0 +1,8 @@
+[Unit]
+Description=Send gotouhou hourly development progress email
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/gotouhou/docs
+EnvironmentFile=-/etc/gotouhou/progress-mail.env
+ExecStart=/usr/bin/python3 /root/gotouhou/docs/ops/hourly_progress_mail.py

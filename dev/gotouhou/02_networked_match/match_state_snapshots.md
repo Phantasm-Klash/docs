@@ -39,6 +39,7 @@
 - 客户端用相同确定性模拟重建弹幕表现。
 - 协议层使用定点整数 delta，例如 `x_milli`、`y_milli`、`vx_milli`、`vy_milli` 和 `radius_milli`。
 - C++ 迁移后，state_hash 覆盖 tick、玩家状态、子弹摘要、active card、RNG 状态和模式摘要；Go MVP 的 JSON hash 只作为迁移期调试信号。
+- 当前 C++ Battle Server 切片已经输出镜像 `BattleSnapshot` 的 dependency-light 结构：`snapshot_tick`、`snapshot_kind`、`state_hash`、`players`、`bullets_delta`、`mode_state.tick_rate_hz` 和 `event_cursor`。现阶段 `bullets_delta` 是简化全量 upsert；后续接入真实 protobuf/KCP 后再拆分增量 delta、关键事件和重连全量快照。
 
 ## 结算快照
 

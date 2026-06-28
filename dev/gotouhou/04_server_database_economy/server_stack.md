@@ -24,6 +24,20 @@
 - `rewards/`：任务、活动、赛季奖励。
 - `admin/`：运营配置和审计。
 
+## Nakama 大厅 MVP
+
+当前 Go Runtime 增量先以内存状态实现 Nakama 大厅协议，后续再替换为 PostgreSQL repository：
+
+- RPC/WSS `rooms.create`：创建房间并返回 `room_code`、队列 ticket、模式人数要求和服务器校验后的 loadout。
+- RPC/WSS `rooms.list` / RPC alias `rooms`：列出仍处于 `waiting` 的公开房间。
+- RPC/WSS `rooms.get`：读取指定房间快照。
+- RPC/WSS `rooms.rules`：读取房间规则快照，包含 `protocol_version`、`ruleset_version`、`mode_ruleset_version`、`mode_config_hash`、tick rate、input delay、battle ticket TTL、服务器权威字段和禁止客户端提交字段。
+- RPC/WSS `rooms.join`：加入房间；服务端校验 mode、stage、卡组快照和模式资格，达到 `min_players` 后创建 match allocation 并为当前玩家返回一次性 battle ticket。
+- RPC/WSS `rooms.leave`：未匹配前离开房间；房主离开会取消房间，非房主离开只取消自己的 ticket。
+- RPC `battle.allocation` / `battle.ticket`：匹配完成后显式读取 battle server allocation 和短期签名 battle ticket。
+
+房间快照只暴露玩家身份、ticket id、服务器 loadout 和 `deck_snapshot_hash`，不暴露可由客户端篡改的权威结算字段。客户端依旧不能提交位置、伤害、擦弹、命中、分数、奖励、Boss HP、卡牌冷却或手牌状态。
+
 ## 环境
 
 开发环境：

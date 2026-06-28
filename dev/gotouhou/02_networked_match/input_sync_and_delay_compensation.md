@@ -28,6 +28,8 @@
 - `seq` 是连接内严格递增包序号，`ack` 用于确认服务端包或快照，二者不替代 `input_tick`。
 - 客户端可上传本地发送时间或本地 tick 作为调试遥测，但不参与权威模拟。
 
+当前 C++ Battle Server 切片先采用保守窗口：只接受 `current_tick < input_tick <= current_tick + max_input_ahead_ticks` 的输入，默认 ahead 窗口为 8 tick；迟到输入拒绝为 `input_tick_too_old`，远未来输入拒绝为 `input_tick_too_far_ahead`，同玩家非递增 `seq` 拒绝为 `seq_replay`。tick 推进时若目标 tick 没有新输入，沿用上一 tick 输入；该策略会写入 replay summary，后续可在完整 Replay 流中显式记录 fallback tick。
+
 ## 本地预测
 
 - 客户端输入后立即预测自机移动。

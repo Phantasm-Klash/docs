@@ -29,6 +29,8 @@
 
 各模式只实现差异逻辑。
 
+当前 C++ Battle Server 已提供这些接口的最小公共骨架：`RegisterTicket` 创建或加入 match simulation，`AcceptInput` 执行权威输入校验和缓冲，`TickMatch` 固定推进 60Hz，`MatchSnapshot` 构建权威快照，`MatchReplaySummary` 产出 replay/hash 摘要。模式差异逻辑、卡牌、Boss、结算签名和服务间回调仍待接入。
+
 ## 动作类型
 
 - `cast_card`：常规卡牌施放。

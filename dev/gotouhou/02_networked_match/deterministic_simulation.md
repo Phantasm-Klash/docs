@@ -52,4 +52,4 @@ state_hash 用于 Replay 校验和线上问题排查。
 
 - Gensoulkyo Go MVP 已能用服务端 seed、tick 和稳定排序生成弹幕、快照和短 state_hash，但仍使用 `float64` 和 JSON hash，只能作为契约 MVP。
 - PhK-Protocol 的 `BattlePlayerSnapshot`、`BattleBulletDelta` 已开始使用 milli 定点字段，C++ 迁移应沿用该方向。
-- C++ Battle Server 目前只有 packet/seq/tick 结构检查，尚未实现确定性战斗核心。
+- C++ Battle Server 已开始权威战斗核心切片：固定 `kBattleTickRateHz = 60`、按 `BattleInput.tick` 缓冲输入、验证玩家/seq/输入窗口/方向 bit/card slot、使用 milli 整数推进玩家和简化径向弹幕，并输出镜像 `BattleSnapshot` 的玩家/子弹 delta、`mode_state.tick_rate_hz`、canonical FNV-1a `state_hash` 和 replay summary hash。该切片仍是 v0.1 dependency-light 实现，尚未覆盖命中、擦弹、Bomb、卡牌、Boss、真实 protobuf 序列化和加密传输。

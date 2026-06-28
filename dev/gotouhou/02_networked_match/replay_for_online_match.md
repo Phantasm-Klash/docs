@@ -29,6 +29,8 @@
 
 Replay 的确定性验收以 C++ Battle Server 的 canonical state hash 为准。客户端播放可以插值和补帧，但不能改变输入流、事件流和结算结果。
 
+当前 C++ Battle Server 切片已生成 `ReplaySummary` 镜像字段：`match_id`、`input_stream_hash`、`event_stream_hash`、`final_state_hash`、`final_tick`、`input_count` 和 `event_count`。该 summary 可作为 Gensoulkyo 验签入库前的迁移期对照；完整 Replay 仍需要保存逐 tick 输入流、模式事件流和版本化规则快照。
+
 ## 隐私
 
 - Replay 中不记录聊天私信。

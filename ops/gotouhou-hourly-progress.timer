@@ -1,0 +1,10 @@
+[Unit]
+Description=Run gotouhou hourly development progress email
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=gotouhou-hourly-progress.service
+
+[Install]
+WantedBy=timers.target

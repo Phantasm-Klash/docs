@@ -1,0 +1,30 @@
+name: Protocol Audit
+
+on:
+  pull_request:
+    paths:
+      - "dev/gotouhou/02_networked_match/**"
+      - "dev/gotouhou/04_server_database_economy/**"
+      - "dev/gotouhou/08_game_modes/**"
+      - "docs/protocol-audit-process.md"
+      - "ops/protocol_audit_check.py"
+      - ".github/workflows/protocol-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  docs-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout docs
+        uses: actions/checkout@v4
+      - name: Verify protocol audit process is present
+        run: |
+          test -f docs/protocol-audit-process.md
+          test -f ops/protocol_audit_check.py
+      - name: Require manual security checklist acknowledgement
+        run: |
+          grep -q "Battle tickets remain short-lived" docs/protocol-audit-process.md

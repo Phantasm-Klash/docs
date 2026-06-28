@@ -22,10 +22,12 @@
 2. 客户端提交 mode_id 和可选 mode_params。
 3. Nakama/Go 校验卡组、模式资格和规则版本。
 4. 加入 Nakama 匹配队列或房间。
-5. 匹配成功后，Nakama/Go 分配 C++ Battle Server 并创建 match allocation。
-6. Nakama/Go 签发一次性 `battle_ticket`，通过业务 WSS/HTTPS 下发 battle endpoint。
-7. 客户端用 battle ticket 连接 Battle KCP/UDP，完成 ECDHE 握手。
-8. 所有参与者在业务层和战斗层 ready 后开始 tick。
+5. 房间模式下，客户端可先调用 `rooms.list`、`rooms.get` 和 `rooms.rules` 查看等待房间、当前参与者、服务器锁定的 ruleset/mode hash、tick rate、input delay、battle ticket TTL 和禁止客户端提交字段。
+6. 未匹配前，客户端可调用 `rooms.leave` 离开；房主离开会取消房间。
+7. 匹配成功后，Nakama/Go 分配 C++ Battle Server 并创建 match allocation。
+8. Nakama/Go 签发一次性 `battle_ticket`，通过业务 WSS/HTTPS 下发 battle endpoint；客户端也可用 `battle.allocation` 和 `battle.ticket` 显式申请当前 match 的分配和 ticket。
+9. 客户端用 battle ticket 连接 Battle KCP/UDP，完成 ECDHE 握手。
+10. 所有参与者在业务层和战斗层 ready 后开始 tick。
 
 不同模式人数要求：
 

@@ -233,3 +233,14 @@ create table match_events (
   payload_json jsonb not null
 );
 ```
+
+## rooms 与 battle ticket 审计
+
+当前 Go Runtime 的 Nakama 大厅 MVP 先以内存状态实现 `rooms.create/list/get/rules/join/leave`、match allocation 和 battle ticket 申请。PostgreSQL 持久化阶段需要补齐房间和 ticket 审计表，至少保存：
+
+- `room_code`、`host_user_id`、`mode`、`status`、`stage_id`、`mode_params_json`、`created_at`、`matched_at`、`closed_at`。
+- room participant 的 `ticket_id`、`user_id`、`deck_snapshot_hash`、`loadout_json`、`joined_at`、`left_at`、`status`。
+- battle allocation 的 `match_id`、`battle_server_id`、`endpoint`、`mode_config_hash`、`allocated_at`。
+- battle ticket 的 `ticket_id`、`match_id`、`user_id`、`battle_server_id`、`deck_snapshot_hash`、`issued_at`、`expires_at`、`revoked_at` 和签名 key id。
+
+这些表只作为业务大厅、审计和重连恢复数据源；权威战斗状态、分数、伤害、擦弹、命中、Boss HP 和奖励仍由服务端结算链路写入 `matches`、`match_players`、`match_events` 与奖励流水。
