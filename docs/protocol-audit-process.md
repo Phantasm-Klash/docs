@@ -21,6 +21,9 @@ The local audit now performs both per-repository checks and a cross-repository
 contract check:
 
 - `PhK-Protocol` descriptor, Go manifest, and C++ manifest versions must match.
+- `PhK-Protocol` `battle_snapshot` and `battle_event` fixtures must be exported
+  as shared Go/C++ manifest constants and consumed by Gensoulkyo and
+  PhK-BattleServer tests.
 - `SpellKard` must load the shared descriptor and validate the minimal battle
   packet/ticket/result contract.
 - `SpellKard` mode-action client builders must submit only mode id, action
