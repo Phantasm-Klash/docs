@@ -29,7 +29,7 @@ Current implementation contains a Go HTTP MVP with in-memory authority for sessi
 
 ## PhK-Protocol
 
-Planned shared protocol repository for:
+Local shared protocol directory for:
 
 - protobuf schemas;
 - business secure envelope definitions;
@@ -41,16 +41,20 @@ Planned shared protocol repository for:
 
 This repository should be open source and versioned before production C++ Battle Server migration begins. Draft schemas and manifest/descriptor bridges already exist; full generated Go/C++/Godot protobuf bindings are still pending.
 
+Current repository boundary: `/root/gotouhou/PhK-Protocol` exists locally, but `https://github.com/Phantasm-Klash/PhK-Protocol.git` is not available and the directory is not a Git working tree on the current host. The next infrastructure step is to create the GitHub repository, initialize the local directory on `main`, add the remote, push the current skeleton, then enable the same protocol-audit branch protection used by `Gensoulkyo` and `SpellKard`.
+
 ## PhK-BattleServer
 
-Planned C++ combat server repository for:
+Local C++ combat server directory for:
 
 - ECDHE + KCP/UDP + protobuf + ChaCha20-Poly1305 battle transport;
 - authoritative 60Hz PVP, battle royale, world Boss, and instance Boss tick simulation;
 - snapshot, event, reconnect, replay-stream, and signed battle result generation;
 - performance and latency tests.
 
-This repository should be open source for the base combat rules. It must not contain Steam SDK files, commercial drop strategies, or official private deployment secrets. Current implementation is a C++ skeleton with packet/ticket/result structural guards; real KCP, crypto, protobuf, deterministic simulation, and golden replay validation are pending.
+This repository should be open source for the base combat rules. It must not contain Steam SDK files, commercial drop strategies, or official private deployment secrets. Current implementation is a C++ skeleton with packet/ticket/result structural guards plus an early 60Hz authoritative simulation/hash snapshot slice; real KCP, crypto, protobuf bindings, and golden replay validation are still pending.
+
+Current repository boundary: `/root/gotouhou/PhK-BattleServer` exists locally, but `https://github.com/Phantasm-Klash/PhK-BattleServer.git` is not available and the directory is not a Git working tree on the current host. The next infrastructure step is to create the GitHub repository, initialize the local directory on `main`, add the remote, push the current skeleton, then require C++ checker/build jobs before merging network or simulation PRs.
 
 ## SpellKard
 
@@ -64,6 +68,8 @@ Client repository for:
 - local tools and tests.
 
 Current implementation contains a Godot 4.7 local STG prototype with bullet math/pattern bases, practice stages, Pattern Lab, characters, cards/decks/chests, replay, UI row models, i18n/theme/accessibility/input/audio settings, Gensoulkyo HTTP contract projection, and headless validation tools. Final visual scenes, production assets, and polished online UX are still pending.
+
+`SpellKard` now includes a GitHub protocol-audit workflow, CODEOWNERS, PR checklist, and `tools/ci_static_checks.py` for JSON, i18n, asset manifest, and network/protocol client script checks. Godot headless jobs should be added once a Linux Godot binary is available in CI.
 
 ## Closed Private Repositories
 
