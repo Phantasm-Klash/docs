@@ -17,6 +17,17 @@ Run the local cross-repository check from the docs repository:
 python3 ops/protocol_audit_check.py
 ```
 
+The local audit now performs both per-repository checks and a cross-repository
+contract check:
+
+- `PhK-Protocol` descriptor, Go manifest, and C++ manifest versions must match.
+- `SpellKard` must load the shared descriptor and validate the minimal battle
+  packet/ticket/result contract.
+- `Gensoulkyo` must depend on the local `PhK-Protocol` manifest and keep its
+  protocol contract tests wired to shared version constants.
+- `PhK-BattleServer` must consume the generated C++ manifest for version,
+  ruleset, and required field gates.
+
 ## Review checklist
 
 - The client still submits only input intent, deck/mode requests, and transport

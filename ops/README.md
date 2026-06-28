@@ -62,3 +62,13 @@ The Phantasm-Klash organization currently has a single visible member, so the
 script sets the required approving review count to `0` to avoid self-review
 deadlock while still preserving required checks and CODEOWNERS metadata. When a
 separate reviewer or team exists, raise the count to `1`.
+
+## Cross-repository protocol audit
+
+`protocol_audit_check.py` runs the protocol checker, Go runtime contract tests,
+Battle Server checker, and a direct cross-repository compatibility pass across
+`PhK-Protocol`, `SpellKard`, `Gensoulkyo`, and `PhK-BattleServer`.
+
+```sh
+python3 ops/protocol_audit_check.py
+```
