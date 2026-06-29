@@ -162,7 +162,18 @@ def run_checks(root: Path, godot: Path, include_godot: bool, include_protocol: b
         "checks": checks,
         "ok": not failed,
         "failed_count": len(failed),
-        "failed": [{"name": check.get("name"), "status": check.get("status"), "blocked": check.get("blocked", False)} for check in failed],
+        "failed": [
+            {
+                "name": check.get("name"),
+                "status": check.get("status"),
+                "blocked": check.get("blocked", False),
+                "ignored": check.get("ignored", False),
+                "cwd": check.get("cwd", ""),
+                "command": check.get("command", []),
+                "output_tail": str(check.get("output_tail", ""))[-1500:],
+            }
+            for check in failed
+        ],
         "ignored_count": len(ignored),
         "ignored": [{"name": check.get("name"), "reason": check.get("ignore_reason", "")} for check in ignored],
     }
