@@ -24,6 +24,14 @@ def iso_now() -> str:
 
 def run(command: list[str], cwd: Path, timeout: int) -> dict[str, Any]:
     try:
+        env = {
+            **os.environ,
+            "HOME": os.environ.get("HOME", "/root"),
+            "XDG_CONFIG_HOME": os.environ.get("XDG_CONFIG_HOME", "/root/.config"),
+            "GOCACHE": os.environ.get("GOCACHE", "/root/.cache/go-build"),
+            "GOPATH": os.environ.get("GOPATH", "/root/go"),
+            "GODOT_SILENCE_ROOT_WARNING": "1",
+        }
         completed = subprocess.run(
             command,
             cwd=str(cwd),
@@ -32,7 +40,7 @@ def run(command: list[str], cwd: Path, timeout: int) -> dict[str, Any]:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=timeout,
-            env={**os.environ, "GODOT_SILENCE_ROOT_WARNING": "1"},
+            env=env,
         )
         output = completed.stdout.strip()
         return {

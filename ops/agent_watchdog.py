@@ -185,6 +185,10 @@ def snapshot_bucket(snapshot: dict[str, Any]) -> str | None:
 
 def command_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env = os.environ.copy()
+    env.setdefault("HOME", "/root")
+    env.setdefault("XDG_CONFIG_HOME", "/root/.config")
+    env.setdefault("GOCACHE", "/root/.cache/go-build")
+    env.setdefault("GOPATH", "/root/go")
     if extra:
         env.update(extra)
     return env

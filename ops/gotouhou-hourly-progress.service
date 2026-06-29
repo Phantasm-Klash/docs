@@ -5,5 +5,9 @@ Description=Send gotouhou hourly development progress email
 Type=oneshot
 WorkingDirectory=/root/gotouhou/docs
 EnvironmentFile=-/etc/gotouhou/progress-mail.env
+Environment=HOME=/root
+Environment=XDG_CONFIG_HOME=/root/.config
+Environment=GOCACHE=/root/.cache/go-build
+Environment=GOPATH=/root/go
 TimeoutStartSec=20min
 ExecStart=/bin/sh /root/gotouhou/docs/ops/hourly_progress_runner.sh

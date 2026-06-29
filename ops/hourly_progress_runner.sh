@@ -9,6 +9,11 @@ ERROR_LOG="$AGENTS/watchdog-last-error.log"
 REGRESSION_LOG="$AGENTS/regression-last-run.log"
 
 mkdir -p "$AGENTS"
+export HOME="${HOME:-/root}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/root/.config}"
+export GOCACHE="${GOCACHE:-/root/.cache/go-build}"
+export GOPATH="${GOPATH:-/root/go}"
+mkdir -p "$GOCACHE" "$GOPATH"
 
 /usr/bin/python3 "$DOCS/ops/run_regression_checks.py" --root "$ROOT" > "$REGRESSION_LOG" 2>&1 || true
 
