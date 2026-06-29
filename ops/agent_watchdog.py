@@ -31,6 +31,7 @@ GITHUB_ORG = "Phantasm-Klash"
 UTC = dt.timezone.utc
 ACTIVE_STARTED_ONLY_STALL_SECONDS = 10 * 60
 ACTIVE_NO_PROGRESS_STALL_SECONDS = 20 * 60
+BUGFIX_SCOPE_PREFIX = "bugfix-"
 
 KEY_ALIAS_PREFERENCES: dict[str, tuple[str, ...]] = {
     "spellkard-bullet": ("spellkard-bullet", "spellkard", "other"),
@@ -40,7 +41,44 @@ KEY_ALIAS_PREFERENCES: dict[str, tuple[str, ...]] = {
     "change-describer": ("change-describer", "docs", "ops", "other"),
     "plan-auditor": ("plan-auditor", "docs", "ops", "other"),
     "bugfix-spellkard-godot-headless": ("spellkard-ui", "spellkard-bullet", "spellkard", "other"),
+    "bugfix-gensoulkyo-regression": ("gensoulkyo-lobby", "gensoulkyo", "other"),
+    "bugfix-phk-battle-server-regression": ("phk-battle-server", "phk", "battle-server", "battle", "other"),
+    "bugfix-phk-protocol-regression": ("phk-protocol", "protocol", "phk", "other"),
+    "bugfix-protocol-audit-regression": ("phk", "protocol", "gensoulkyo", "battle-server", "other"),
     "manager": ("manager", "ops", "other"),
+}
+
+BUGFIX_FAILURE_ROUTES: dict[str, dict[str, Any]] = {
+    "spellkard-client-ui-headless": {
+        "scope": "bugfix-spellkard-godot-headless",
+        "repo": "SpellKard",
+        "branch": "fix/godot-headless-regressions",
+        "kind": "spellkard-godot",
+    },
+    "spellkard-boss-pattern-headless": {
+        "scope": "bugfix-spellkard-godot-headless",
+        "repo": "SpellKard",
+        "branch": "fix/godot-headless-regressions",
+        "kind": "spellkard-godot",
+    },
+    "gensoulkyo-docker-compose": {
+        "scope": "bugfix-gensoulkyo-regression",
+        "repo": "Gensoulkyo",
+        "branch": "fix/gensoulkyo-regression",
+        "kind": "server",
+    },
+    "battle-server-docker-compose": {
+        "scope": "bugfix-phk-battle-server-regression",
+        "repo": "PhK-BattleServer",
+        "branch": "fix/battle-server-regression",
+        "kind": "server",
+    },
+    "cross-repo-protocol-audit": {
+        "scope": "bugfix-protocol-audit-regression",
+        "repo": "docs",
+        "branch": "fix/protocol-audit-regression",
+        "kind": "protocol",
+    },
 }
 
 DEVELOPMENT_SCOPE_DIRECTIVES: dict[str, str] = {
@@ -726,8 +764,87 @@ def collect_runtime_environment(root: Path, now: dt.datetime, godot_bin: Path) -
     }
 
 
-def pr_approval_checks(root: Path, repo_name: str, pr: dict[str, Any]) -> list[str]:
+def docs_route_paths_for_repo(repo_name: str) -> tuple[str, ...]:
+    common = ("dev/progress.md", "dev/gotouhou/00_overview/network_security_and_server_split_plan.md")
+    if repo_name == "SpellKard":
+        return (
+            *common,
+            "dev/gotouhou/01_core_stg_client/bullet_pattern_system.md",
+            "dev/gotouhou/05_content_assets_ui/ui_screens.md",
+        )
+    if repo_name == "Gensoulkyo":
+        return (
+            *common,
+            "dev/gotouhou/04_server_database_economy/server_stack.md",
+            "dev/gotouhou/04_server_database_economy/client_server_connection.md",
+        )
+    if repo_name == "PhK-BattleServer":
+        return (
+            *common,
+            "dev/gotouhou/02_networked_match/deterministic_lockstep_review.md",
+            "dev/gotouhou/08_game_modes/mode_shared_server_interfaces.md",
+        )
+    if repo_name == "PhK-Protocol":
+        return (
+            *common,
+            "dev/gotouhou/02_networked_match/deterministic_lockstep_review.md",
+            "dev/gotouhou/08_game_modes/mode_shared_server_interfaces.md",
+        )
+    return common
+
+
+def pr_review_evidence(root: Path, repo_name: str, pr: dict[str, Any]) -> dict[str, Any]:
+    number = pr.get("number")
+    diff_status = 1
+    diff_output = ""
+    if isinstance(number, int):
+        diff_status, diff_output = run_command(
+            ["gh", "pr", "diff", str(number), "--repo", f"{GITHUB_ORG}/{repo_name}"],
+            root / repo_name,
+            timeout=60,
+            env=gh_env(),
+        )
+    route_files: list[dict[str, Any]] = []
+    docs_root = root / "docs"
+    for rel_path in docs_route_paths_for_repo(repo_name):
+        path = docs_root / rel_path
+        if not path.exists():
+            route_files.append({"path": str(path), "exists": False})
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            route_files.append({"path": str(path), "exists": True, "error": str(exc)})
+            continue
+        route_files.append(
+            {
+                "path": str(path),
+                "exists": True,
+                "sha256": sha256_text(text),
+                "bytes": len(text.encode("utf-8")),
+            }
+        )
+    return {
+        "diff_status": diff_status,
+        "diff_bytes": len(diff_output.encode("utf-8")) if diff_output else 0,
+        "diff_sha256": sha256_text(diff_output) if diff_output else "",
+        "diff_excerpt": diff_output[:1200],
+        "docs_routes": route_files,
+    }
+
+
+def pr_approval_checks(root: Path, repo_name: str, pr: dict[str, Any]) -> dict[str, Any]:
     blockers: list[str] = []
+    evidence = pr_review_evidence(root, repo_name, pr)
+    if evidence.get("diff_status") != 0 or not evidence.get("diff_sha256"):
+        blockers.append("PR diff could not be read before approval")
+    missing_routes = [
+        route.get("path")
+        for route in evidence.get("docs_routes", [])
+        if isinstance(route, dict) and not route.get("exists")
+    ]
+    if missing_routes:
+        blockers.append(f"docs/dev route missing: {', '.join(str(path) for path in missing_routes[:3])}")
     if pr.get("isDraft"):
         blockers.append("draft PR")
     if pr.get("baseRefName") != "main":
@@ -747,7 +864,7 @@ def pr_approval_checks(root: Path, repo_name: str, pr: dict[str, Any]) -> list[s
         blockers.append("no Dockerfile/docker-compose files for server regression")
     if not repo_root.exists():
         blockers.append("local repository missing")
-    return blockers
+    return {"blockers": blockers, "evidence": evidence}
 
 
 def maybe_approve_pull_requests(root: Path, pull_requests: dict[str, Any], approve: bool) -> list[dict[str, Any]]:
@@ -761,7 +878,8 @@ def maybe_approve_pull_requests(root: Path, pull_requests: dict[str, Any], appro
             number = pr.get("number")
             if not isinstance(number, int):
                 continue
-            blockers = pr_approval_checks(root, repo_name, pr)
+            check_result = pr_approval_checks(root, repo_name, pr)
+            blockers = check_result.get("blockers") if isinstance(check_result.get("blockers"), list) else []
             if blockers:
                 actions.append(
                     {
@@ -770,17 +888,20 @@ def maybe_approve_pull_requests(root: Path, pull_requests: dict[str, Any], appro
                         "number": number,
                         "url": pr.get("url"),
                         "blockers": blockers,
+                        "evidence": check_result.get("evidence"),
                     }
                 )
                 continue
             body = (
-                "watchdog route/code review passed: docs/dev direction checked, "
-                "local regression gates completed, no blocking PR metadata found."
+                "watchdog route/code review passed: PR diff was read, docs/dev direction "
+                "was sampled, local regression gates completed, and no blocking PR metadata "
+                "was found."
             )
             code, output = run_command(
                 ["gh", "pr", "review", str(number), "--repo", f"{GITHUB_ORG}/{repo_name}", "--approve", "--body", body],
                 root / repo_name,
                 timeout=60,
+                env=gh_env(),
             )
             actions.append(
                 {
@@ -790,6 +911,7 @@ def maybe_approve_pull_requests(root: Path, pull_requests: dict[str, Any], appro
                     "url": pr.get("url"),
                     "status": code,
                     "output": output[-1000:],
+                    "evidence": check_result.get("evidence"),
                 }
             )
     return actions
@@ -1312,8 +1434,17 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
     for action in bugfix_actions:
         if action.get("type") == "bugfix-pr-open":
             risk_lines.append(
-                f"- SpellKard Godot 回归已有修复 PR #{action.get('number')}，mergeState={action.get('mergeStateStatus')}，等待分支保护审批/合并。"
+                f"- {action.get('repo')} 回归已有修复 PR #{action.get('number')}，mergeState={action.get('mergeStateStatus')}，等待分支保护审批/合并。"
             )
+        elif action.get("type") == "bugfix-deferred":
+            risk_lines.append(f"- {action.get('repo')} 回归修复 agent 暂缓: {action.get('reason')}。")
+    started_bugfix = [action for action in actions if isinstance(action, dict) and action.get("type") == "start-bugfix-agent"]
+    for action in started_bugfix:
+        result = action.get("result") if isinstance(action.get("result"), dict) else {}
+        risk_lines.append(
+            f"- watchdog 已为 {action.get('repo')} 回归启动独立 bugfix agent `{action.get('scope')}`，"
+            f"started={result.get('started')}，branch={action.get('branch')}。"
+        )
     if not risk_lines:
         risk_lines.append("- 未发现新的阻塞风险。")
 
@@ -1331,6 +1462,8 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
         f"- watchdog 已采样 manager、agent、仓库、PR、Godot Linux、Docker 和 docker-compose 状态，采样时间 {summary.get('generated_at', '')}。",
         f"- docs/ops 当前策略要求 feature branch、阶段性 commit、PR 审批流程，不再默认直接推 main。",
         "- agent 停滞判定已使用 scope 路径 commit 指纹，不再把同仓其他 scope 的 repo HEAD 变化误算为本 scope 进展。",
+        "- 历史漏检原因已定位：旧逻辑把同仓 repo HEAD、全局 heartbeat 和过宽的日志输出算作 scope 进展；现在只有 scope 路径提交、scoped diff、scope heartbeat、有效报告/测试/日志变化才算推进。",
+        "- watchdog 发现回归失败时会按检查类型启动独立 bugfix agent：SpellKard headless、Gensoulkyo docker-compose、PhK-BattleServer docker-compose、跨仓协议审计分别走独立 fix 分支和 PR。",
         "- fallback runner 已固定 `/root` GitHub CLI 配置、credential helper、socks 代理和 Go cache；worker 本地提交后应直接推分支并开 PR。",
         f"- Godot Linux: `{godot.get('path', DEFAULT_GODOT_LINUX)}`，exists={godot.get('exists')}，executable={godot.get('executable')}，version={godot.get('version', '')}。",
         f"- Docker: available={docker.get('available')}，docker-compose={docker.get('docker_compose_available')}，version={docker.get('docker_compose_version', '')}。",
@@ -1367,7 +1500,7 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
             "- SpellKard 改动优先用 Linux Godot headless 跑对应 smoke/check 脚本。",
             "- 服务器无显卡导致的纯 Godot 渲染器失败可标记为 ignored/blocked；GDScript 编译、类型和脚本合同失败仍必须修复。",
             "- Gensoulkyo 与 PhK-BattleServer 优先补 Dockerfile/docker-compose 回归入口，再跑服务端回归。",
-            "- watchdog 发现 PR 后应读取代码和 docs/dev 路线，满足检查才审批。",
+            "- watchdog 发现 PR 后必须读取 PR diff 和 docs/dev 路线，满足检查才审批；发现回归代码问题必须开独立 bugfix agent/branch/PR。",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -1463,8 +1596,10 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
             "- watchdog 已采样 branch/PR、agent、Godot Linux、Docker 和 `docker-compose` 状态，邮件摘要可直接读取本轮最新报告。",
             "- worker prompt 已纳入 feature branch、阶段性 commit、PR、Linux Godot headless、服务端 Docker/`docker-compose` 回归要求。",
             "- watchdog 停滞检测已改为 scope 路径 commit 指纹，避免同仓其他 scope 提交掩盖本 scope 停滞。",
+            "- 停滞判定不再使用全局 manager heartbeat、全局 regression mtime 或同仓其他 scope 的 repo HEAD；started-only 日志和过期 active lock 会触发替代 worker。",
             "- fallback runner 已固定 HOME/XDG/GH_CONFIG_DIR、GitHub socks 代理和 credential helper 环境，worker 应可直接推分支、开 PR，并在失败时写入 final log。",
-            "- PR 审批被定义为受控动作：读取代码和 docs/dev 路线、运行对应检查、确认无阻塞后才 `gh pr review --approve`；不自动合并。",
+            "- PR 审批被定义为受控动作：读取 PR diff 和 docs/dev 路线、运行对应检查、确认无阻塞后才 `gh pr review --approve`；不自动合并。",
+            "- regression 失败会按检查类型分发独立 bugfix agent/branch/PR，且同仓有 active worker 或 bugfix lock 时自动暂缓，避免互相覆盖。",
             "- 最近 main 提交会结合 GitHub merged PR 采样判断，避免把刚通过 PR 合入的提交误报为直接推 main。",
             "",
             "## 潜在偏离或优先级问题",
@@ -1483,7 +1618,7 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
             "- SpellKard worker：必须使用 `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` 运行相关 headless check。",
             "- SpellKard worker：无显卡导致的纯渲染器错误可记录为环境 blocked；GDScript parse/compile/type error 和脚本合同失败不能忽略。",
             "- 服务端 worker：优先使用 `docker-compose` 回归；缺 Dockerfile/compose 时运行本地回归并记录阻塞。",
-            "- watchdog/manager：发现 open PR 后读取 diff 和 docs/dev 路线，运行 gates，通过才审批 PR；不自动合并。",
+            "- watchdog/manager：发现 open PR 后读取 diff 和 docs/dev 路线，运行 gates，通过才审批 PR；发现回归失败后按仓库启动独立 bugfix agent，不自动合并。",
         ]
     ) + "\n"
 
@@ -1491,13 +1626,17 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
 def managed_change_describer_prompt() -> str:
     return """你是 gotouhou 持续中文摘要 agent（change-describer / Narrator）。
 
-工作区：`/root/gotouhou`。运行模式：Codex `/goal` 持续目标模式。
+工作区：`/root/gotouhou`。运行模式：Codex `/goal` 持续目标模式。每轮必须从本机最新状态生成报告，不能复用上轮结论。
 
-每轮必须读取最新 `/root/gotouhou/.agents/last-watchdog-summary.json`，并检查五个子仓库状态、branch/PR/最近 merged PR 状态、agent roster、systemd unit、locks、logs、Godot Linux、Docker 与 `docker-compose` 状态。输出简单中文摘要到 `/root/gotouhou/.agents/reports/change-summary-latest.md`，同时更新本提示词文件。
+每轮必须读取最新 `/root/gotouhou/.agents/last-watchdog-summary.json`，并检查五个子仓库状态、branch/PR/最近 merged PR 状态、agent roster、systemd unit、locks、logs、reports 更新时间、Godot Linux、Docker 与 `docker-compose` 状态。报告输出到 `/root/gotouhou/.agents/reports/change-summary-latest.md`，同时更新本提示词文件。
 
-摘要必须包含：更新前服务器状态、更新后服务器状态、本小时完成内容、Agent 状态、阻塞/风险、下一小时建议。
+摘要必须包含：更新前服务器状态、更新后服务器状态、本小时完成内容、Agent 状态、PR 状态、阻塞/风险、下一小时建议。文字用项目负责人能直接看懂的中文短句，不粘贴冗长 git 原文、diff、日志和命令输出。
 
-必须写入风险：报告未更新、agent lock 残留或 started-only 日志、active 但无有效输出、dead lock 被清理、补救后未重采样、已退出 fallback 仍显示 started/running、非零退出未标 failed、未走 feature branch + PR、main 近一小时提交无法匹配 merged PR、PR 采样失败、watchdog 查出的代码问题未开独立 bugfix PR、bugfix PR 被分支保护阻塞、Godot Linux headless 未跑、服务端 Docker/`docker-compose` 回归缺失、watchdog/邮件异常、key alias 缺失。不得把全局 manager heartbeat 或全局 regression mtime 当成某个 agent 的推进。服务器无显卡导致的纯 Godot 渲染器失败可以写为 ignored/blocked，不算功能失败；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败仍必须写为真实阻塞。不得泄露 SMTP 密码、token、私钥、API key 或任何凭据；可以写 key alias 和 scope，不能写 key value。只允许写 `.agents` 下指定报告和提示词，不修改 git 仓库，不提交，不推送。写报告必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
+必须写入风险：报告未更新、agent lock 残留或 started-only 日志、active 但无有效输出、dead lock 被清理、补救后未重采样、已退出 fallback 仍显示 started/running、非零退出未标 failed、未走 feature branch + PR、main 近一小时提交无法匹配 merged PR、PR 采样失败、watchdog 查出的代码问题未开独立 bugfix PR、bugfix PR 被分支保护阻塞、Godot Linux headless 未跑、服务端 Docker/`docker-compose` 回归缺失、watchdog/邮件异常、key alias 缺失、工作区已有未提交改动但被误报为完成。
+
+不得把全局 manager heartbeat、全局 regression 文件 mtime、同仓其他 scope 的 repo HEAD 变化当成某个 scope 的推进。服务器无显卡导致的纯 Godot 渲染器失败可以写为 ignored/blocked，不算功能失败；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败仍必须写为真实阻塞。
+
+不得泄露 SMTP 密码、token、私钥、API key 或任何凭据；可以写 key alias 和 agent scope，不能写 key value。只允许写 `.agents/reports/change-summary-latest.md` 和 `.agents/agent-prompts/change-describer.md`，不修改五个子仓库，不提交，不推送。写报告和提示词必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
 """
 
 
@@ -1508,9 +1647,9 @@ def managed_plan_auditor_prompt() -> str:
 
 每轮读取 `/root/gotouhou/docs/dev/progress.md` 与 `/root/gotouhou/docs/dev/gotouhou/**/*.md`，再检查五个子仓库状态、branch/PR/最近 merged PR 形态、最近提交、systemd/lock/log 真实进程状态、最新 watchdog summary、Godot Linux headless 能力、Docker/`docker-compose` 回归能力和 open PR。判断新增功能与开发流程是否符合 Phase 2/3/6/8、网络安全、Nakama、大厅/房间、C++ BattleServer、Godot UI/弹幕路线。
 
-必须审计：是否缺阶段性 commit、是否直接推 main、main 近一小时提交是否能匹配 recently merged PR、是否缺 PR、PR 是否读完代码和路线后再审批、watchdog 查出的代码问题是否开独立 bugfix 分支/PR 并测试合回、SpellKard 是否用 Linux Godot headless 验证、服务端是否使用 Docker/`docker-compose` 或记录缺口、邮件内容是否及时反映 agent 真实进程状态和阻塞风险。补救动作后没有重采样、started-only 日志、active 但无有效输出、dead lock、已退出 fallback 仍显示 started、报告未更新、用全局 manager heartbeat 或全局 regression mtime 掩盖 scope 停滞，都算 agent 未正常执行，不得当成正常运行。服务器无显卡导致的纯 Godot 渲染器失败可以忽略为环境 blocked；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败不能忽略。
+必须审计：是否缺阶段性 commit、是否直接推 main、main 近一小时提交是否能匹配 recently merged PR、是否缺 PR、PR 是否读完代码和路线后再审批、watchdog 查出的代码问题是否开独立 bugfix 分支/PR 并测试合回、SpellKard 是否用 Linux Godot headless 验证、服务端是否使用 Docker/`docker-compose` 或记录缺口、邮件内容是否及时反映 agent 真实进程状态和阻塞风险。补救动作后没有重采样、started-only 日志、active 但无有效输出、dead lock、已退出 fallback 仍显示 started、非零退出未标 failed、报告未更新、用同仓其他 scope 的 repo HEAD、全局 manager heartbeat 或全局 regression mtime 掩盖 scope 停滞，都算 agent 未正常执行，不得当成正常运行。服务器无显卡导致的纯 Godot 渲染器失败可以忽略为环境 blocked；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败不能忽略。
 
-输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`，同时更新本提示词文件。只允许写 `.agents` 下指定文件，不修改 git 仓库，不提交，不推送。不得泄露凭据。结论必须明确“符合/偏离/建议调整”，并给出可直接交给后续 worker 的中文提示词。写报告必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
+输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`，同时更新本提示词文件。只允许写 `.agents` 下指定文件，不修改 git 仓库，不提交，不推送。不得泄露凭据。结论必须明确“符合/偏离/建议调整”，并给出可直接交给后续 worker 的中文提示词。写报告和提示词必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
 """
 
 
@@ -1826,27 +1965,48 @@ test capability.
 """
 
 
-def bugfix_prompt(scope_id: str, reason: str, key_assignment: dict[str, Any], failures: list[dict[str, Any]]) -> str:
+def bugfix_prompt(
+    scope_id: str,
+    reason: str,
+    key_assignment: dict[str, Any],
+    failures: list[dict[str, Any]],
+    route: dict[str, Any],
+) -> str:
     failure_lines = "\n".join(
-        f"- {item.get('name')} status={item.get('status')} blocked={item.get('blocked', False)}"
+        f"- {item.get('name')} status={item.get('status')} blocked={item.get('blocked', False)} cwd={item.get('cwd', '')} tail={str(item.get('output_tail', ''))[:300]}"
         for item in failures
     )
+    repo = str(route.get("repo", "SpellKard"))
+    branch = str(route.get("branch", "fix/watchdog-regression"))
+    kind = str(route.get("kind", "generic"))
+    cwd = "/root/gotouhou" if repo == "docs" and kind == "protocol" else f"/root/gotouhou/{repo}"
+    route_docs = "\n".join(f"- `/root/gotouhou/docs/{path}`" for path in docs_route_paths_for_repo(repo if repo != "docs" else "PhK-Protocol"))
+    if kind == "spellkard-godot":
+        check_text = "使用 `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` 从 `/root/gotouhou/SpellKard/godot` 运行相关 headless 脚本；纯 renderer/RenderingDevice 问题可标记为环境 blocked，GDScript/合同失败必须修复。"
+    elif kind == "server":
+        check_text = "优先使用 `docker-compose` 运行服务端回归；涉及协议/网络/安全时必须运行 `/root/gotouhou/docs/ops/protocol_audit_check.py`。"
+    elif kind == "protocol":
+        check_text = "先运行 `/root/gotouhou/docs/ops/protocol_audit_check.py` 定位失败仓库，再在实际失败仓库从最新 `origin/main` 创建 `fix/<area>` 分支；涉及服务端时同时使用 `docker-compose` 回归。"
+    else:
+        check_text = "运行失败项对应的最小回归，并把仍阻塞的环境原因写入 PR。"
     return f"""{goal_prompt_preamble(scope_id, reason, key_assignment)}
 
 你是 gotouhou watchdog 代码回归修复 agent。
 
-工作区：`/root/gotouhou/SpellKard`
-分支：从最新 `origin/main` 创建或继续 `fix/godot-headless-regressions`
-目标：修复 watchdog/Godot Linux headless 查出的非渲染代码回归；纯服务器无显卡导致的 renderer/RenderingDevice 失败可以标记为环境 blocked，但 GDScript parse/compile/type error、脚本加载失败、UI/弹幕合同失败必须修复。
+工作区：`{cwd}`
+建议分支：从最新 `origin/main` 创建或继续 `{branch}`
+目标：修复 watchdog 回归检查查出的代码问题。不得把纯环境缺口伪装成功能修复；若是服务器无显卡导致的纯 Godot renderer/RenderingDevice 失败，可标记为环境 blocked，但 GDScript parse/compile/type error、脚本加载失败、UI/弹幕合同失败必须修复。
 
 当前失败：
 {failure_lines or "- 未提供失败明细，请读取 /root/gotouhou/.agents/checks/latest-regression.json。"}
 
 必须执行：
-- 先读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/01_core_stg_client/bullet_pattern_system.md`、`docs/dev/gotouhou/05_content_assets_ui/ui_screens.md` 和最新 regression JSON。
-- 只修改 SpellKard 中与 Godot headless 回归相关的最小文件集，不回滚他人改动。
-- 使用 `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` 从 `/root/gotouhou/SpellKard/godot` 运行 `../tools/client_smoke_test.gd`、`../tools/client_ui_smoke_test.gd`、`../tools/boss_pattern_catalog_check.gd` 或等价最小检查。
-- 阶段性 commit，推送 bugfix 分支，创建 PR；PR 正文写明测试结果、忽略的纯渲染环境问题和未解决风险。
+- 先读最新 regression JSON 和以下 docs/dev 路线：
+{route_docs}
+- 只修改与回归失败直接相关的最小文件集，不回滚他人或其他 agent 改动。
+- {check_text}
+- 使用 UTF-8 和 Linux LF。
+- 阶段性 commit，推送 bugfix 分支，创建 PR；PR 正文写明测试结果、忽略的纯环境问题、协议/网络/安全影响和未解决风险。
 - 测试通过后请求合并；如果分支保护或权限阻止合并，把 PR URL 和阻塞原因写入 `/root/gotouhou/.agents/logs/{scope_id}-final.md`。
 """
 
@@ -2406,56 +2566,116 @@ def open_pr_for_branch(pull_requests: dict[str, Any], repo_name: str, branch: st
     return None
 
 
-def maybe_start_regression_bugfix(
+def regression_failure_route(failure: dict[str, Any]) -> dict[str, Any] | None:
+    name = str(failure.get("name", ""))
+    route = BUGFIX_FAILURE_ROUTES.get(name)
+    if route is None:
+        return None
+    if failure.get("blocked") or failure.get("ignored"):
+        return None
+    return route
+
+
+def grouped_regression_failures(failed: list[Any]) -> dict[str, dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for raw_failure in failed:
+        failure = raw_failure if isinstance(raw_failure, dict) else {}
+        route = regression_failure_route(failure)
+        if route is None:
+            continue
+        scope_id = str(route["scope"])
+        group = groups.setdefault(scope_id, {"route": route, "failures": []})
+        group["failures"].append(failure)
+    return groups
+
+
+def repo_has_active_bugfix_or_worker(root: Path, repo_name: str, scope_id: str, now: dt.datetime) -> tuple[bool, str]:
+    for other_scope_id in scope_ids_for_repo(repo_name):
+        status = lock_status(lock_path(root, other_scope_id), now)
+        if status.get("alive"):
+            return True, f"{repo_name} has active worker lock {other_scope_id}; defer bugfix {scope_id}"
+    for lock in sorted((root / ".agents" / "locks").glob(f"{BUGFIX_SCOPE_PREFIX}*.lock.json")):
+        status = lock_status(lock, now)
+        if not status.get("alive"):
+            continue
+        payload = read_json(lock, {})
+        if isinstance(payload, dict) and payload.get("scope") != scope_id:
+            cwd = str(payload.get("cwd", ""))
+            if cwd == str(root / repo_name) or cwd == str(root):
+                return True, f"{repo_name} has active bugfix lock {payload.get('scope')}; defer bugfix {scope_id}"
+    return False, ""
+
+
+def maybe_start_regression_bugfixes(
     *,
     root: Path,
     regression: dict[str, Any],
     pull_requests: dict[str, Any],
     codex_bin: str,
-    key_assignment: dict[str, Any],
-    key_value: str | None,
+    key_assignments: dict[str, dict[str, Any]],
+    keyring: dict[str, Any],
     dry_run: bool,
-) -> dict[str, Any] | None:
+) -> list[dict[str, Any]]:
     failed = regression.get("failed") if isinstance(regression.get("failed"), list) else []
-    spellkard_failures = [
-        item
-        for item in failed
-        if isinstance(item, dict)
-        and not item.get("blocked")
-        and str(item.get("name", "")).startswith("spellkard-")
-    ]
-    if not spellkard_failures:
-        return None
-    existing_pr = open_pr_for_branch(pull_requests, "SpellKard", "fix/godot-headless-regressions")
-    if existing_pr:
-        return {
-            "type": "bugfix-pr-open",
-            "repo": "SpellKard",
-            "scope": "bugfix-spellkard-godot-headless",
-            "reason": "SpellKard headless regression has open bugfix PR",
-            "url": existing_pr.get("url"),
-            "number": existing_pr.get("number"),
-            "mergeStateStatus": existing_pr.get("mergeStateStatus"),
-        }
-    scope_id = "bugfix-spellkard-godot-headless"
-    reason = "watchdog found SpellKard non-renderer headless regression"
-    return {
-        "type": "start-bugfix-agent",
-        "scope": scope_id,
-        "repo": "SpellKard",
-        "reason": reason,
-        "failures": spellkard_failures,
-        "result": start_background_codex(
-            root=root,
-            scope_id=scope_id,
-            prompt=bugfix_prompt(scope_id, reason, key_assignment, spellkard_failures),
-            cwd=root / "SpellKard",
-            codex_bin=codex_bin,
-            key_assignment=key_assignment,
-            key_value=key_value,
-            dry_run=dry_run,
-        ),
-    }
+    actions: list[dict[str, Any]] = []
+    for scope_id, group in sorted(grouped_regression_failures(failed).items()):
+        route = group["route"]
+        failures = group["failures"]
+        repo_name = str(route["repo"])
+        branch = str(route["branch"])
+        existing_pr = open_pr_for_branch(pull_requests, repo_name, branch)
+        if existing_pr:
+            actions.append(
+                {
+                    "type": "bugfix-pr-open",
+                    "repo": repo_name,
+                    "scope": scope_id,
+                    "branch": branch,
+                    "reason": f"{repo_name} regression has open bugfix PR",
+                    "url": existing_pr.get("url"),
+                    "number": existing_pr.get("number"),
+                    "mergeStateStatus": existing_pr.get("mergeStateStatus"),
+                    "failures": failures,
+                }
+            )
+            continue
+        active, defer_reason = repo_has_active_bugfix_or_worker(root, repo_name, scope_id, utcnow())
+        if active:
+            actions.append(
+                {
+                    "type": "bugfix-deferred",
+                    "repo": repo_name,
+                    "scope": scope_id,
+                    "branch": branch,
+                    "reason": defer_reason,
+                    "failures": failures,
+                }
+            )
+            continue
+        key_assignment = key_assignments.get(scope_id, select_key_alias(scope_id, keyring))
+        reason = f"watchdog found {repo_name} regression checks failing"
+        cwd = root if repo_name == "docs" and route.get("kind") == "protocol" else root / repo_name
+        actions.append(
+            {
+                "type": "start-bugfix-agent",
+                "scope": scope_id,
+                "repo": repo_name,
+                "branch": branch,
+                "reason": reason,
+                "failures": failures,
+                "result": start_background_codex(
+                    root=root,
+                    scope_id=scope_id,
+                    prompt=bugfix_prompt(scope_id, reason, key_assignment, failures, route),
+                    cwd=cwd,
+                    codex_bin=codex_bin,
+                    key_assignment=key_assignment,
+                    key_value=selected_key_value(key_assignment, keyring),
+                    dry_run=dry_run,
+                ),
+            }
+        )
+    return actions
 
 
 def stale_artifact_actions(root: Path, now: dt.datetime) -> list[dict[str, Any]]:
@@ -2509,7 +2729,8 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     keyring = load_keyring(key_file)
     key_assignments = {scope_id: select_key_alias(scope_id, keyring) for scope_id in DEFAULT_SCOPES}
     key_assignments["manager"] = select_key_alias("manager", keyring)
-    key_assignments["bugfix-spellkard-godot-headless"] = select_key_alias("bugfix-spellkard-godot-headless", keyring)
+    for scope_id in sorted({str(route["scope"]) for route in BUGFIX_FAILURE_ROUTES.values()}):
+        key_assignments[scope_id] = select_key_alias(scope_id, keyring)
     latest_snapshot = load_previous_snapshot(snapshot_dir)
     previous = load_previous_distinct_snapshot(snapshot_dir, current_bucket) or latest_snapshot
     risk_previous = latest_snapshot
@@ -2560,17 +2781,16 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         actions.extend(scopes[scope_id]["actions"])
 
     reports = collect_reports(root)
-    bugfix_action = maybe_start_regression_bugfix(
+    bugfix_actions = maybe_start_regression_bugfixes(
         root=root,
         regression=regression,
         pull_requests=pull_requests,
         codex_bin=args.codex_bin,
-        key_assignment=key_assignments["bugfix-spellkard-godot-headless"],
-        key_value=selected_key_value(key_assignments["bugfix-spellkard-godot-headless"], keyring),
+        key_assignments=key_assignments,
+        keyring=keyring,
         dry_run=args.dry_run,
     )
-    if bugfix_action:
-        actions.append(bugfix_action)
+    actions.extend(bugfix_actions)
 
     actions.extend(maybe_approve_pull_requests(root, pull_requests, args.approve_prs))
     actions.extend(stale_artifact_actions(root, now))
