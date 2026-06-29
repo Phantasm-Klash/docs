@@ -458,50 +458,81 @@ def collect_repo(root: Path, repo_name: str, now: dt.datetime) -> dict[str, Any]
     }
 
 
+def collect_pr_list(root: Path, repo_name: str, state: str, now: dt.datetime, limit: int = 20) -> dict[str, Any]:
+    command = [
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        f"{GITHUB_ORG}/{repo_name}",
+        "--state",
+        state,
+        "--limit",
+        str(limit),
+        "--json",
+        "number,title,headRefName,baseRefName,author,isDraft,mergeStateStatus,url,updatedAt,mergedAt",
+    ]
+    repo_root = root / repo_name
+    cwd = repo_root if repo_root.exists() else root
+    code, output = run_command(command, cwd, timeout=30, env=gh_env())
+    fallback_output = ""
+    if code != 0:
+        fallback_code, fallback_output = run_command(command, cwd, timeout=30)
+        if fallback_code == 0:
+            code, output = fallback_code, fallback_output
+    payload = None
+    if code == 0 and output:
+        try:
+            payload = json.loads(output)
+        except json.JSONDecodeError:
+            payload = None
+    if isinstance(payload, list):
+        return {
+            "repo": repo_name,
+            "state": state,
+            "count": len(payload),
+            "items": payload[:limit],
+            "collected_at": iso(now),
+            "status": code,
+        }
+    return {
+        "repo": repo_name,
+        "state": state,
+        "count": None,
+        "items": [],
+        "error": f"gh pr list --state {state} failed or returned invalid JSON",
+        "status": code,
+        "output_tail": (output + ("\nfallback:\n" + fallback_output if fallback_output else ""))[-1000:],
+        "collected_at": iso(now),
+    }
+
+
 def collect_pull_requests(root: Path, now: dt.datetime) -> dict[str, Any]:
     repos: dict[str, Any] = {}
     for repo_name in DEFAULT_REPOS:
-        repo_root = root / repo_name
-        command = [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            f"{GITHUB_ORG}/{repo_name}",
-            "--state",
-            "open",
-            "--json",
-            "number,title,headRefName,baseRefName,author,isDraft,mergeStateStatus,url,updatedAt",
-        ]
-        cwd = repo_root if repo_root.exists() else root
-        code, output = run_command(command, cwd, timeout=30, env=gh_env())
-        fallback_output = ""
-        if code != 0:
-            fallback_code, fallback_output = run_command(command, cwd, timeout=30)
-            if fallback_code == 0:
-                code, output = fallback_code, fallback_output
-        payload = None
-        if code == 0 and output:
-            try:
-                payload = json.loads(output)
-            except json.JSONDecodeError:
-                payload = None
-        if isinstance(payload, list):
+        open_info = collect_pr_list(root, repo_name, "open", now)
+        merged_info = collect_pr_list(root, repo_name, "merged", now, limit=10)
+        if open_info.get("count") is not None:
             repos[repo_name] = {
                 "repo": repo_name,
-                "open_count": len(payload),
-                "items": payload[:20],
+                "open_count": open_info.get("count"),
+                "items": open_info.get("items", []),
+                "recent_merged_count": merged_info.get("count"),
+                "recent_merged_items": merged_info.get("items", [])[:10],
                 "collected_at": iso(now),
-                "status": code,
+                "status": open_info.get("status"),
+                "merged_status": merged_info.get("status"),
             }
         else:
             repos[repo_name] = {
                 "repo": repo_name,
                 "open_count": None,
                 "items": [],
-                "error": "gh pr list failed or returned invalid JSON",
-                "status": code,
-                "output_tail": (output + ("\nfallback:\n" + fallback_output if fallback_output else ""))[-1000:],
+                "recent_merged_count": merged_info.get("count"),
+                "recent_merged_items": merged_info.get("items", [])[:10],
+                "error": open_info.get("error"),
+                "status": open_info.get("status"),
+                "output_tail": open_info.get("output_tail"),
                 "collected_at": iso(now),
             }
     return repos
@@ -1140,6 +1171,7 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
     open_pr_count = 0
     pr_sample_failures: list[str] = []
     open_pr_lines: list[str] = []
+    merged_pr_lines: list[str] = []
     for raw_prs in pull_requests.values():
         prs = raw_prs if isinstance(raw_prs, dict) else {}
         count = prs.get("open_count")
@@ -1150,6 +1182,12 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
                 open_pr_lines.append(
                     f"- {prs.get('repo')}: PR #{pr.get('number')} `{pr.get('headRefName')}` -> `{pr.get('baseRefName')}`，"
                     f"mergeState={pr.get('mergeStateStatus')}，{pr.get('url')}"
+                )
+            for raw_pr in prs.get("recent_merged_items", [])[:3]:
+                pr = raw_pr if isinstance(raw_pr, dict) else {}
+                merged_pr_lines.append(
+                    f"- {prs.get('repo')}: merged PR #{pr.get('number')} `{pr.get('headRefName')}` -> `{pr.get('baseRefName')}`，"
+                    f"mergedAt={pr.get('mergedAt')}，{pr.get('url')}"
                 )
         else:
             pr_sample_failures.append(str(prs.get("repo", "unknown")))
@@ -1206,8 +1244,8 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
         risk_lines.append(f"- 以下 scope 缺少 key alias: {', '.join(missing_keys)}。")
     if pr_sample_failures:
         risk_lines.append(f"- GitHub PR 采样失败: {', '.join(pr_sample_failures)}；不得把采样失败当成无 PR。")
-    elif open_pr_count == 0:
-        risk_lines.append("- 当前五个仓库没有打开的 PR；后续开发应走 feature branch + PR，不再直接推 main。")
+    elif open_pr_count == 0 and not merged_pr_lines:
+        risk_lines.append("- 当前五个仓库没有打开的 PR，且未采样到最近 merged PR；后续开发应走 feature branch + PR，不再直接推 main。")
     bugfix_actions = [action for action in actions if isinstance(action, dict) and str(action.get("type", "")).startswith("bugfix")]
     for action in bugfix_actions:
         if action.get("type") == "bugfix-pr-open":
@@ -1251,6 +1289,10 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
         lines.append(f"- 采样失败: {', '.join(pr_sample_failures)}。")
     elif open_pr_lines:
         lines.extend(open_pr_lines)
+        if merged_pr_lines:
+            lines.extend(["", "最近已合并 PR:", *merged_pr_lines[:10]])
+    elif merged_pr_lines:
+        lines.extend(["- 当前未发现 open PR。", "", "最近已合并 PR:", *merged_pr_lines[:10]])
     else:
         lines.append("- 当前未发现 open PR。")
 
@@ -1291,18 +1333,36 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
             pr_sample_failures.append(str(prs.get("repo", "unknown")))
 
     direct_main_risks: list[str] = []
+    merged_main_notes: list[str] = []
     for repo_name, raw_repo in sorted(repos.items()):
         repo = raw_repo if isinstance(raw_repo, dict) else {}
         status = str(repo.get("status", ""))
         commits = repo.get("commits_last_hour") if isinstance(repo.get("commits_last_hour"), list) else []
-        if repo.get("branch") == "main" and commits and not pr_sample_failures and open_pr_count == 0:
-            direct_main_risks.append(f"- {repo_name}: main 分支近一小时有提交但当前没有 open PR，需要确认是否为授权 hotfix。")
+        branch = str(repo.get("branch", ""))
+        clean_baseline_branch = branch == "main" or (branch.startswith("agent/") and "...origin/main" in status)
+        if clean_baseline_branch and commits and not pr_sample_failures and open_pr_count == 0:
+            pr_info = pull_requests.get(repo_name) if isinstance(pull_requests.get(repo_name), dict) else {}
+            raw_merged_items = pr_info.get("recent_merged_items") if isinstance(pr_info.get("recent_merged_items"), list) else []
+            merged_items = [
+                item
+                for item in raw_merged_items
+                if isinstance(item, dict) and item.get("baseRefName") == "main"
+            ]
+            merged_titles = [
+                f"#{item.get('number')} {item.get('title')}"
+                for item in merged_items[:3]
+                if isinstance(item, dict)
+            ]
+            if merged_titles:
+                merged_main_notes.append(f"- {repo_name}: 当前 {branch} 基线包含最近已合并 PR（{'; '.join(merged_titles)}），不按直接推 main 处理。")
+            else:
+                direct_main_risks.append(f"- {repo_name}: 当前 {branch} 近一小时有提交但未采样到最近 merged PR，需要确认是否为授权 hotfix。")
 
     docker_files = docker.get("repo_files") if isinstance(docker.get("repo_files"), dict) else {}
     flow_risks = list(direct_main_risks)
     if pr_sample_failures:
         flow_risks.append(f"- GitHub PR 采样失败: {', '.join(pr_sample_failures)}；流程审计不能把失败当成无 PR。")
-    elif open_pr_count == 0:
+    elif open_pr_count == 0 and not merged_main_notes:
         flow_risks.append("- 当前无 open PR；后续开发应补齐 feature branch + PR 轨迹。")
     flow_risks.extend(blocked_prs)
     if not godot.get("exists") or not godot.get("executable"):
@@ -1320,6 +1380,8 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
             flow_risks.append(f"- {server_repo}: 未发现 Dockerfile/docker-compose，服务端 Docker 回归入口仍缺失。")
     if not flow_risks:
         flow_risks.append("- 未发现当前流程阻塞。")
+    if merged_main_notes:
+        flow_risks.extend(merged_main_notes)
 
     return "\n".join(
         [
@@ -1337,6 +1399,7 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
             "- watchdog 已采样 branch/PR、agent、Godot Linux、Docker 和 `docker-compose` 状态，邮件摘要可直接读取本轮最新报告。",
             "- worker prompt 已纳入 feature branch、阶段性 commit、PR、Linux Godot headless、服务端 Docker/`docker-compose` 回归要求。",
             "- PR 审批被定义为受控动作：读取代码和 docs/dev 路线、运行对应检查、确认无阻塞后才 `gh pr review --approve`；不自动合并。",
+            "- 最近 main 提交会结合 GitHub merged PR 采样判断，避免把刚通过 PR 合入的提交误报为直接推 main。",
             "",
             "## 潜在偏离或优先级问题",
             "",
@@ -1364,11 +1427,11 @@ def managed_change_describer_prompt() -> str:
 
 工作区：`/root/gotouhou`。运行模式：Codex `/goal` 持续目标模式。
 
-每轮必须读取最新 `/root/gotouhou/.agents/last-watchdog-summary.json`，并检查五个子仓库状态、branch/PR 状态、agent roster、locks、logs、Godot Linux、Docker 与 `docker-compose` 状态。输出简单中文摘要到 `/root/gotouhou/.agents/reports/change-summary-latest.md`，同时更新本提示词文件。
+每轮必须读取最新 `/root/gotouhou/.agents/last-watchdog-summary.json`，并检查五个子仓库状态、branch/PR/最近 merged PR 状态、agent roster、systemd unit、locks、logs、Godot Linux、Docker 与 `docker-compose` 状态。输出简单中文摘要到 `/root/gotouhou/.agents/reports/change-summary-latest.md`，同时更新本提示词文件。
 
 摘要必须包含：更新前服务器状态、更新后服务器状态、本小时完成内容、Agent 状态、阻塞/风险、下一小时建议。
 
-必须写入风险：报告未更新、agent lock 残留或 started-only 日志、active 但无有效输出、dead lock 被清理、补救后未重采样、未走 feature branch + PR、PR 采样失败、bugfix PR 被分支保护阻塞、Godot Linux headless 未跑、服务端 Docker/`docker-compose` 回归缺失、watchdog/邮件异常、key alias 缺失。不得把全局 manager heartbeat 或全局 regression mtime 当成某个 agent 的推进。服务器无显卡导致的纯 Godot 渲染器失败可以写为 ignored/blocked，不算功能失败；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败仍必须写为真实阻塞。不得泄露 SMTP 密码、token、私钥、API key 或任何凭据；可以写 key alias 和 scope，不能写 key value。只允许写 `.agents` 下指定报告和提示词，不修改 git 仓库，不提交，不推送。写报告必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
+必须写入风险：报告未更新、agent lock 残留或 started-only 日志、active 但无有效输出、dead lock 被清理、补救后未重采样、已退出 fallback 仍显示 started/running、非零退出未标 failed、未走 feature branch + PR、main 近一小时提交无法匹配 merged PR、PR 采样失败、watchdog 查出的代码问题未开独立 bugfix PR、bugfix PR 被分支保护阻塞、Godot Linux headless 未跑、服务端 Docker/`docker-compose` 回归缺失、watchdog/邮件异常、key alias 缺失。不得把全局 manager heartbeat 或全局 regression mtime 当成某个 agent 的推进。服务器无显卡导致的纯 Godot 渲染器失败可以写为 ignored/blocked，不算功能失败；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败仍必须写为真实阻塞。不得泄露 SMTP 密码、token、私钥、API key 或任何凭据；可以写 key alias 和 scope，不能写 key value。只允许写 `.agents` 下指定报告和提示词，不修改 git 仓库，不提交，不推送。写报告必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
 """
 
 
@@ -1377,9 +1440,9 @@ def managed_plan_auditor_prompt() -> str:
 
 工作区：`/root/gotouhou`。运行模式：Codex `/goal` 持续目标模式。
 
-每轮读取 `/root/gotouhou/docs/dev/progress.md` 与 `/root/gotouhou/docs/dev/gotouhou/**/*.md`，再检查五个子仓库状态、branch/PR 形态、最近提交、最新 watchdog summary、Godot Linux headless 能力、Docker/`docker-compose` 回归能力和 open PR。判断新增功能与开发流程是否符合 Phase 2/3/6/8、网络安全、Nakama、大厅/房间、C++ BattleServer、Godot UI/弹幕路线。
+每轮读取 `/root/gotouhou/docs/dev/progress.md` 与 `/root/gotouhou/docs/dev/gotouhou/**/*.md`，再检查五个子仓库状态、branch/PR/最近 merged PR 形态、最近提交、systemd/lock/log 真实进程状态、最新 watchdog summary、Godot Linux headless 能力、Docker/`docker-compose` 回归能力和 open PR。判断新增功能与开发流程是否符合 Phase 2/3/6/8、网络安全、Nakama、大厅/房间、C++ BattleServer、Godot UI/弹幕路线。
 
-必须审计：是否缺阶段性 commit、是否直接推 main、是否缺 PR、PR 是否读完代码和路线后再审批、watchdog 查出的代码问题是否开独立 bugfix 分支/PR、SpellKard 是否用 Linux Godot headless 验证、服务端是否使用 Docker/`docker-compose` 或记录缺口、邮件内容是否及时反映 agent 状态和阻塞风险。补救动作后没有重采样、started-only 日志、active 但无有效输出、dead lock、报告未更新、用全局 manager heartbeat 或全局 regression mtime 掩盖 scope 停滞，都算 agent 未正常执行，不得当成正常运行。服务器无显卡导致的纯 Godot 渲染器失败可以忽略为环境 blocked；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败不能忽略。
+必须审计：是否缺阶段性 commit、是否直接推 main、main 近一小时提交是否能匹配 recently merged PR、是否缺 PR、PR 是否读完代码和路线后再审批、watchdog 查出的代码问题是否开独立 bugfix 分支/PR 并测试合回、SpellKard 是否用 Linux Godot headless 验证、服务端是否使用 Docker/`docker-compose` 或记录缺口、邮件内容是否及时反映 agent 真实进程状态和阻塞风险。补救动作后没有重采样、started-only 日志、active 但无有效输出、dead lock、已退出 fallback 仍显示 started、报告未更新、用全局 manager heartbeat 或全局 regression mtime 掩盖 scope 停滞，都算 agent 未正常执行，不得当成正常运行。服务器无显卡导致的纯 Godot 渲染器失败可以忽略为环境 blocked；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败不能忽略。
 
 输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`，同时更新本提示词文件。只允许写 `.agents` 下指定文件，不修改 git 仓库，不提交，不推送。不得泄露凭据。结论必须明确“符合/偏离/建议调整”，并给出可直接交给后续 worker 的中文提示词。写报告必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
 """
