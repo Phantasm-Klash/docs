@@ -165,7 +165,7 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
         warning = " permissions-too-open" if keyring.get("permission_warning") else ""
         lines.append(
             "Agent keys: "
-            f"path={keyring.get('path', '(unknown)')} "
+            f"source={keyring.get('source', 'configured-local-keyring')} "
             f"aliases={keyring.get('alias_count', 0)} "
             f"mode={keyring.get('permissions', 'unknown')}"
             f"{warning}"
@@ -243,9 +243,13 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
             lines.append(
                 "- "
                 f"{scope_id}: status={scope.get('status', 'unknown')} "
+                f"continuous={scope.get('continuous', 'unknown')} "
+                f"started_this_hour={scope.get('started_this_hour', 'unknown')} "
+                f"due_for_continuation={scope.get('due_for_continuation', 'unknown')} "
                 f"progress={scope.get('progress', 'unknown')} "
                 f"stalled={scope.get('stalled_count', 'unknown')} "
                 f"deferred={scope.get('deferred', False)} "
+                f"deferred_reason={scope.get('deferred_reason') or '-'} "
                 f"repo={scope.get('repo', 'unknown')} "
                 f"lock_alive={lock.get('alive', 'unknown')} "
                 f"unit={lock.get('unit') or '-'} "

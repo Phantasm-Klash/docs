@@ -380,14 +380,15 @@ def load_keyring(key_file: Path) -> dict[str, Any]:
 
 def keyring_public_summary(keyring: dict[str, Any]) -> dict[str, Any]:
     aliases = keyring.get("aliases") if isinstance(keyring.get("aliases"), dict) else {}
+    public_error = "read-error" if keyring.get("error") else None
     return {
-        "path": keyring.get("path", DEFAULT_KEY_FILE),
+        "source": "configured-local-keyring",
         "exists": bool(keyring.get("exists")),
         "aliases": sorted(str(alias) for alias in aliases),
         "alias_count": len(aliases),
         "permissions": keyring.get("permissions"),
         "permission_warning": bool(keyring.get("permission_warning")),
-        "error": keyring.get("error"),
+        "error": public_error,
     }
 
 
@@ -955,15 +956,15 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
         "Manager workspace: /root/gotouhou",
         "Git topology: root .git is invalid/empty; child repositories are the commit roots.",
         "Encoding policy: UTF-8, Linux LF.",
-        "Key policy: agents receive per-scope keys from /root/.codex/keys; status files record aliases only.",
+        "Key policy: agents receive per-scope keys from the configured local keyring; status files record aliases only.",
         "Version policy: development work uses feature branches, staged commits, pull requests, and protected-main reviews by default.",
         f"Godot Linux: {godot.get('path', DEFAULT_GODOT_LINUX)} exists={godot.get('exists')} executable={godot.get('executable')} version={godot.get('version', '')}",
         f"Docker: available={docker.get('available')} docker-compose={docker.get('docker_compose_available')} version={docker.get('docker_compose_version', '')}",
         "",
         "## Managed goal scopes",
         "",
-        "| Scope | Repo | Status | Key alias | Continuous | Started hour | Continue due | Progress | Stalled | Head | Actions |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Scope | Repo | Status | Key alias | continuous | started_this_hour | due_for_continuation | Deferred | Progress | Stalled | Head | Actions |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for scope_id, raw_scope in sorted(scopes.items()):
         scope = raw_scope if isinstance(raw_scope, dict) else {}
@@ -975,6 +976,7 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
             f"{scope.get('continuous', '')} | "
             f"{scope.get('started_this_hour', '')} | "
             f"{scope.get('due_for_continuation', '')} | "
+            f"{scope.get('deferred', '')} | "
             f"{scope.get('progress', '')} | {scope.get('stalled_count', '')} | "
             f"{scope.get('head', '')} | {len(scope.get('actions', [])) if isinstance(scope.get('actions'), list) else 0} |"
         )
