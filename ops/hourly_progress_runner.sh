@@ -37,6 +37,7 @@ payload = {
     "generated_at": now,
     "root": "/root/gotouhou",
     "watchdog_failed": True,
+    "resampled_after_actions": False,
     "failures": [{"type": "watchdog-run-failed", "status": status, "error": error}],
     "actions": [],
     "action_count": 0,

@@ -56,6 +56,8 @@ GIT_FLOW_PROMPT = """版本控制和 PR 流程：
 - 提交或推送前使用 `/root/gotouhou/.agents/locks/git-<repo>.lock`，避免同仓并发冲突。
 - watchdog 查出的代码回归必须开独立 `fix/<area>` 分支和 PR，测试通过后请求合并；若分支保护阻止合并，写入状态和邮件，不得假报已合并。
 - PR 审批前必须读 PR diff、相关 docs/dev 路线和测试结果；审批不等于自动合并。
+- 每次最终状态和邮件必须来自补救动作后的最新采样；不能把启动前的旧 lock/unit/PR 状态当作最终状态。
+- 连续样本无 commit、无 scoped diff、无有效日志、无 report/final 状态更新的 agent 算停滞；只有 `[watchdog] started` 的日志不能算正常运行。
 """
 
 
@@ -257,6 +259,13 @@ def write_json(path: Path, payload: Any) -> None:
         handle.write("\n")
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path.write_text(text, encoding="utf-8", newline="\n")
+    tmp_path.replace(path)
+
+
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -371,11 +380,47 @@ def pid_alive(pid: int | None) -> bool:
     return True
 
 
-def systemd_unit_active(unit: str | None) -> bool:
+def systemd_unit_info(unit: str | None) -> dict[str, Any]:
     if not unit:
-        return False
-    code, output = run_command(["systemctl", "is-active", unit], Path("/"), timeout=10)
-    return code == 0 and output.strip() == "active"
+        return {"unit": None, "active": False, "exists": False}
+    active_code, active_output = run_command(["systemctl", "is-active", unit], Path("/"), timeout=10)
+    show_code, show_output = run_command(
+        ["systemctl", "show", unit, "--property=ActiveState,SubState,MainPID,LoadState", "--no-pager"],
+        Path("/"),
+        timeout=10,
+    )
+    fields: dict[str, str] = {}
+    if show_code == 0:
+        for line in show_output.splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                fields[key] = value
+    main_pid: int | None = None
+    try:
+        parsed_pid = int(fields.get("MainPID", "0"))
+        if parsed_pid > 1:
+            main_pid = parsed_pid
+    except ValueError:
+        main_pid = None
+    load_state = fields.get("LoadState", "")
+    active_state = fields.get("ActiveState", active_output.strip())
+    return {
+        "unit": unit,
+        "exists": show_code == 0 and load_state not in {"", "not-found"},
+        "active": active_code == 0 and active_output.strip() == "active",
+        "active_state": active_state,
+        "sub_state": fields.get("SubState", ""),
+        "load_state": load_state,
+        "main_pid": main_pid,
+        "main_pid_alive": pid_alive(main_pid),
+        "is_active_status": active_code,
+        "show_status": show_code,
+        "is_active_output": active_output,
+    }
+
+
+def systemd_unit_active(unit: str | None) -> bool:
+    return bool(systemd_unit_info(unit).get("active"))
 
 
 def newest_file_mtime(paths: list[Path]) -> float | None:
@@ -858,6 +903,19 @@ def latest_log_path(root: Path, scope_id: str) -> Path | None:
     return max(logs, key=lambda path: path.stat().st_mtime)
 
 
+def test_log_mtime(root: Path, scope_id: str, repo_name: str) -> float | None:
+    agents_dir = root / ".agents"
+    candidates = [
+        agents_dir / "regression-last-run.log",
+        agents_dir / "checks" / "latest-regression.json",
+    ]
+    logs_dir = agents_dir / "logs"
+    if logs_dir.exists():
+        for pattern in (f"{scope_id}*test*.log", f"{scope_id}*check*.log", f"{repo_name}*test*.log", f"{repo_name}*check*.log"):
+            candidates.extend(path for path in logs_dir.glob(pattern) if path.is_file())
+    return newest_file_mtime(candidates)
+
+
 def log_status(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
         return {"exists": False}
@@ -873,6 +931,7 @@ def log_status(path: Path | None) -> dict[str, Any]:
         and not line.startswith("[watchdog] started")
         and not line.startswith("[watchdog] exited")
     ]
+    started_only = bool(lines) and not useful_lines and not any(line.startswith("[watchdog] exited status=") for line in lines)
     exited = any(line.startswith("[watchdog] exited status=") for line in lines)
     exit_status: int | None = None
     for line in reversed(lines):
@@ -889,12 +948,16 @@ def log_status(path: Path | None) -> dict[str, Any]:
         "line_count": len(lines),
         "useful_line_count": len(useful_lines),
         "useful_hash": sha256_text("\n".join(useful_lines)) if useful_lines else "",
-        "started_only": len(lines) == 1 and bool(lines and lines[0].startswith("[watchdog] started")),
+        "started_only": started_only,
         "exited": exited,
         "exit_status": exit_status,
         "updated_at": iso(dt.datetime.fromtimestamp(path.stat().st_mtime, UTC)),
         "tail": "\n".join(lines[-6:])[-1000:],
     }
+
+
+def log_has_useful_output(log: dict[str, Any]) -> bool:
+    return bool(log.get("useful_hash") and int(log.get("useful_line_count", 0) or 0) > 0)
 
 
 def report_path(root: Path, scope_id: str) -> Path | None:
@@ -939,6 +1002,30 @@ def repo_status_sentence(repo_name: str, repo: dict[str, Any]) -> str:
     dirty_text = "工作区干净" if dirty == 0 else f"{dirty} 个未提交项"
     commit_text = "近一小时无新提交" if not commits else f"近一小时 {len(commits)} 个提交"
     return f"- {repo_name}: {repo.get('branch', 'unknown')} {repo.get('head', '')}，{dirty_text}，{commit_text}。"
+
+
+def scope_risk_reason(scope_id: str, scope: dict[str, Any]) -> str:
+    lock = scope.get("lock") if isinstance(scope.get("lock"), dict) else {}
+    log = scope.get("log") if isinstance(scope.get("log"), dict) else {}
+    reasons: list[str] = []
+    if lock.get("stale"):
+        reasons.append("lock 已超过保守时限")
+    if lock.get("dead_unfinished"):
+        reasons.append("lock 对应进程/unit 已死且日志没有正常退出记录")
+    if lock.get("alive") and not log_has_useful_output(log):
+        reasons.append("agent 已启动但日志仍无有效输出")
+    if scope.get("report_expected") and not scope.get("report_updated"):
+        reasons.append("受管报告 mtime 未更新")
+    stalled_count = int(scope.get("stalled_count", 0) or 0)
+    if stalled_count >= 2:
+        reasons.append("连续两次没有 scoped diff、commit、heartbeat 或测试日志变化")
+    elif not scope.get("progress"):
+        reasons.append("本轮没有 scoped diff、commit、heartbeat 或测试日志变化")
+    if scope.get("recent_launch_failed"):
+        reasons.append("上次补救启动未产生有效输出")
+    if not reasons:
+        return ""
+    return f"{scope_id}: " + "；".join(reasons)
 
 
 def build_builtin_change_summary(summary: dict[str, Any]) -> str:
@@ -995,6 +1082,12 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
         risk_lines.append(f"- 当前仍有 active lock: {', '.join(active_locks)}。")
     if dead_locks:
         risk_lines.append(f"- watchdog 清理/发现死锁: {', '.join(dead_locks)}；旧 service 可能曾杀掉后台 agent。")
+    for scope_id, raw_scope in sorted(scopes.items()):
+        if not isinstance(raw_scope, dict):
+            continue
+        risk_reason = scope_risk_reason(scope_id, raw_scope)
+        if risk_reason:
+            risk_lines.append(f"- 停滞风险: {risk_reason}。")
     deferred_scopes = [
         (scope_id, raw_scope.get("deferred_reason"))
         for scope_id, raw_scope in scopes.items()
@@ -1199,10 +1292,10 @@ def write_managed_reports(root: Path, summary: dict[str, Any]) -> None:
     prompts_dir = root / ".agents" / "agent-prompts"
     reports_dir.mkdir(parents=True, exist_ok=True)
     prompts_dir.mkdir(parents=True, exist_ok=True)
-    (reports_dir / "change-summary-latest.md").write_text(build_builtin_change_summary(summary), encoding="utf-8", newline="\n")
-    (reports_dir / "plan-audit-latest.md").write_text(build_builtin_plan_audit(summary), encoding="utf-8", newline="\n")
-    (prompts_dir / "change-describer.md").write_text(managed_change_describer_prompt(), encoding="utf-8", newline="\n")
-    (prompts_dir / "plan-auditor.md").write_text(managed_plan_auditor_prompt(), encoding="utf-8", newline="\n")
+    atomic_write_text(reports_dir / "change-summary-latest.md", build_builtin_change_summary(summary))
+    atomic_write_text(reports_dir / "plan-audit-latest.md", build_builtin_plan_audit(summary))
+    atomic_write_text(prompts_dir / "change-describer.md", managed_change_describer_prompt())
+    atomic_write_text(prompts_dir / "plan-auditor.md", managed_plan_auditor_prompt())
 
 
 def lock_path(root: Path, scope_id: str) -> Path:
@@ -1213,9 +1306,21 @@ def lock_status(path: Path, now: dt.datetime, stale_minutes: int = 240) -> dict[
     payload = read_json(path, {})
     pid = payload.get("pid") if isinstance(payload, dict) else None
     unit = payload.get("unit") if isinstance(payload, dict) else None
+    launcher = payload.get("launcher") if isinstance(payload, dict) else None
     started = parse_iso(payload.get("started_at") if isinstance(payload, dict) else None)
-    unit_active = systemd_unit_active(unit if isinstance(unit, str) else None)
-    alive = pid_alive(pid if isinstance(pid, int) else None) or unit_active
+    unit_info = systemd_unit_info(unit if isinstance(unit, str) else None)
+    stored_pid_alive = pid_alive(pid if isinstance(pid, int) else None)
+    unit_active = bool(unit_info.get("active"))
+    unit_main_pid_alive = bool(unit_info.get("main_pid_alive"))
+    if launcher == "systemd-run" or unit:
+        if isinstance(pid, int) and pid > 1:
+            alive = unit_active and (stored_pid_alive or unit_main_pid_alive)
+        else:
+            alive = unit_active and (unit_main_pid_alive or unit_info.get("main_pid") is None)
+        active_source = "systemd-unit" if alive else "systemd-unit-inactive"
+    else:
+        alive = stored_pid_alive
+        active_source = "stored-pid" if alive else "stored-pid-dead"
     log = log_status(Path(str(payload.get("log_path"))) if isinstance(payload, dict) and payload.get("log_path") else None)
     stale = False
     age_seconds = None
@@ -1228,8 +1333,13 @@ def lock_status(path: Path, now: dt.datetime, stale_minutes: int = 240) -> dict[
         "exists": path.exists(),
         "pid": pid,
         "unit": unit,
+        "launcher": launcher,
+        "stored_pid_alive": stored_pid_alive,
+        "unit_info": unit_info,
         "unit_active": unit_active,
+        "unit_main_pid_alive": unit_main_pid_alive,
         "alive": alive,
+        "active_source": active_source,
         "stale": stale,
         "dead_unfinished": dead_unfinished,
         "age_seconds": age_seconds,
@@ -1251,6 +1361,39 @@ def cleanup_dead_lock(path: Path, status: dict[str, Any], dry_run: bool) -> dict
         "dry_run": dry_run,
     }
     if not dry_run:
+        try:
+            path.unlink()
+            action["removed"] = True
+        except OSError as exc:
+            action["removed"] = False
+            action["error"] = str(exc)
+    return action
+
+
+def stop_stalled_lock(path: Path, status: dict[str, Any], reason: str, dry_run: bool) -> dict[str, Any]:
+    action = {
+        "type": "stop-stalled-agent",
+        "reason": reason,
+        "lock": str(path),
+        "lock_status": status,
+        "dry_run": dry_run,
+    }
+    unit = status.get("unit")
+    pid = status.get("pid")
+    if dry_run:
+        return action
+    if isinstance(unit, str) and unit:
+        code, output = run_command(["systemctl", "stop", unit], Path("/"), timeout=20)
+        action["systemctl_stop"] = {"status": code, "output": output[-1000:]}
+    elif isinstance(pid, int) and pid > 1:
+        try:
+            os.kill(pid, 15)
+            action["pid_signal"] = "SIGTERM"
+        except OSError as exc:
+            action["pid_signal_error"] = str(exc)
+    refreshed = lock_status(path, utcnow())
+    action["post_stop_lock"] = refreshed
+    if not refreshed.get("alive"):
         try:
             path.unlink()
             action["removed"] = True
@@ -1640,6 +1783,9 @@ def evaluate_scope(
     latest_log = latest_log_path(root, scope_id)
     log = log_status(latest_log)
     log_mtime = latest_log.stat().st_mtime if latest_log and latest_log.exists() else None
+    heartbeat_path = root / ".agents" / "manager-heartbeat.json"
+    heartbeat_mtime = heartbeat_path.stat().st_mtime if heartbeat_path.exists() else None
+    tests_mtime = test_log_mtime(root, scope_id, repo)
     previous_scope = ((previous or {}).get("scopes") or {}).get(scope_id, {})
     previous_repo = ((previous or {}).get("repos") or {}).get(repo, {})
 
@@ -1671,17 +1817,20 @@ def evaluate_scope(
         roster_entry["last_failure_reason"] = cleanup_action.get("reason")
 
     previous_log_hash = previous_scope.get("log_useful_hash")
-    progress = bool(
-        previous is None
-        or current_head != previous_repo.get("head")
-        or diff_hash != previous_scope.get("diff_hash")
-        or (log.get("useful_hash") and log.get("useful_hash") != previous_log_hash)
-    )
+    commit_progress = bool(previous is None or current_head != previous_repo.get("head"))
+    diff_progress = bool(previous is None or diff_hash != previous_scope.get("diff_hash"))
+    log_progress = bool(log.get("useful_hash") and log.get("useful_hash") != previous_log_hash)
+    heartbeat_progress = bool(heartbeat_mtime is not None and heartbeat_mtime != previous_scope.get("heartbeat_mtime"))
+    test_log_progress = bool(tests_mtime is not None and tests_mtime != previous_scope.get("test_log_mtime"))
+    progress = bool(commit_progress or diff_progress or log_progress or heartbeat_progress or test_log_progress)
     scope_report_path = report_path(root, scope_id)
+    report_expected = scope_report_path is not None
+    report_updated = False
     if scope_report_path and scope_report_path.exists():
         report_mtime = scope_report_path.stat().st_mtime
         if report_mtime != previous_scope.get("report_mtime"):
             progress = True
+            report_updated = True
     else:
         report_mtime = None
     recent_launch_failed = bool(lock.get("dead_unfinished"))
@@ -1696,6 +1845,7 @@ def evaluate_scope(
     else:
         stalled_count = 0 if progress else int(previous_scope.get("stalled_count", 0)) + 1
 
+    active_stalled = bool(lock.get("alive") and not progress and stalled_count >= stalled_samples)
     action_reason = ""
     should_start = False
     completed = roster_entry.get("status") == "completed"
@@ -1704,6 +1854,17 @@ def evaluate_scope(
     started_this_hour = bool(last_started and hour_bucket(last_started) == hour_bucket(now))
     if deferred:
         should_start = False
+    elif active_stalled:
+        action_reason = f"active agent stalled for {stalled_count} samples"
+        stop_action = stop_stalled_lock(lock_file, lock, action_reason, dry_run=dry_run)
+        actions.append(stop_action)
+        lock = lock_status(lock_file, now)
+        if not lock.get("alive"):
+            should_start = True
+            roster_entry["status"] = "failed"
+            roster_entry["last_failure_reason"] = action_reason
+        else:
+            should_start = False
     elif lock.get("alive"):
         should_start = False
     elif recent_launch_failed:
@@ -1759,9 +1920,29 @@ def evaluate_scope(
         "log_mtime": log_mtime,
         "log_useful_hash": log.get("useful_hash"),
         "log": log,
+        "heartbeat_mtime": heartbeat_mtime,
+        "test_log_mtime": tests_mtime,
         "report_mtime": report_mtime,
+        "report_expected": report_expected,
+        "report_updated": report_updated,
         "last_seen_at": roster_entry.get("last_seen_at"),
         "progress": progress,
+        "progress_signals": {
+            "commit": commit_progress,
+            "scoped_diff": diff_progress,
+            "heartbeat": heartbeat_progress,
+            "test_log": test_log_progress,
+            "useful_log": log_progress,
+            "report": report_updated,
+        },
+        "stall_signals": {
+            "no_commit": not commit_progress,
+            "no_scoped_diff": not diff_progress,
+            "no_heartbeat": not heartbeat_progress,
+            "no_test_log": not test_log_progress,
+            "no_useful_log": not log_has_useful_output(log),
+            "report_not_updated": report_expected and not report_updated,
+        },
         "recent_launch_failed": recent_launch_failed,
         "deferred": deferred,
         "deferred_reason": deferred_reason,
@@ -1771,6 +1952,96 @@ def evaluate_scope(
         "key_available": key_assignment.get("available"),
         "actions": actions,
     }
+
+
+def refresh_scope_runtime(
+    *,
+    root: Path,
+    scope_id: str,
+    scope: dict[str, Any],
+    scope_state: dict[str, Any],
+    previous: dict[str, Any] | None,
+    now: dt.datetime,
+    same_hour: bool,
+) -> dict[str, Any]:
+    repo = str(scope["repo"])
+    scoped_text, diff_hash = scoped_status(root, scope)
+    current_head = run_git(root / repo, ["rev-parse", "--short", "HEAD"]) or ""
+    latest_log = latest_log_path(root, scope_id)
+    log = log_status(latest_log)
+    log_mtime = latest_log.stat().st_mtime if latest_log and latest_log.exists() else None
+    heartbeat_path = root / ".agents" / "manager-heartbeat.json"
+    heartbeat_mtime = heartbeat_path.stat().st_mtime if heartbeat_path.exists() else None
+    tests_mtime = test_log_mtime(root, scope_id, repo)
+    previous_scope = ((previous or {}).get("scopes") or {}).get(scope_id, {})
+    previous_repo = ((previous or {}).get("repos") or {}).get(repo, {})
+    previous_log_hash = previous_scope.get("log_useful_hash")
+
+    commit_progress = bool(previous is None or current_head != previous_repo.get("head"))
+    diff_progress = bool(previous is None or diff_hash != previous_scope.get("diff_hash"))
+    log_progress = bool(log.get("useful_hash") and log.get("useful_hash") != previous_log_hash)
+    heartbeat_progress = bool(heartbeat_mtime is not None and heartbeat_mtime != previous_scope.get("heartbeat_mtime"))
+    test_log_progress = bool(tests_mtime is not None and tests_mtime != previous_scope.get("test_log_mtime"))
+    progress = bool(commit_progress or diff_progress or log_progress or heartbeat_progress or test_log_progress)
+    scope_report_path = report_path(root, scope_id)
+    report_expected = scope_report_path is not None
+    report_updated = False
+    if scope_report_path and scope_report_path.exists():
+        report_mtime = scope_report_path.stat().st_mtime
+        if report_mtime != previous_scope.get("report_mtime"):
+            progress = True
+            report_updated = True
+    else:
+        report_mtime = None
+
+    if same_hour:
+        stalled_count = int(previous_scope.get("stalled_count", scope_state.get("stalled_count", 0)) or 0)
+    else:
+        stalled_count = 0 if progress else int(previous_scope.get("stalled_count", scope_state.get("stalled_count", 0)) or 0) + 1
+
+    lock = lock_status(lock_path(root, scope_id), now)
+    recent_launch_failed = bool(lock.get("dead_unfinished"))
+    if lock.get("alive") and not log_has_useful_output(log):
+        recent_launch_failed = True
+
+    refreshed = dict(scope_state)
+    refreshed.update(
+        {
+            "head": current_head,
+            "diff_hash": diff_hash,
+            "scoped_dirty": scoped_text.splitlines()[:20],
+            "log_mtime": log_mtime,
+            "log_useful_hash": log.get("useful_hash"),
+            "log": log,
+            "heartbeat_mtime": heartbeat_mtime,
+            "test_log_mtime": tests_mtime,
+            "report_mtime": report_mtime,
+            "report_expected": report_expected,
+            "report_updated": report_updated,
+            "progress": progress,
+            "progress_signals": {
+                "commit": commit_progress,
+                "scoped_diff": diff_progress,
+                "heartbeat": heartbeat_progress,
+                "test_log": test_log_progress,
+                "useful_log": log_progress,
+                "report": report_updated,
+            },
+            "stall_signals": {
+                "no_commit": not commit_progress,
+                "no_scoped_diff": not diff_progress,
+                "no_heartbeat": not heartbeat_progress,
+                "no_test_log": not test_log_progress,
+                "no_useful_log": not log_has_useful_output(log),
+                "report_not_updated": report_expected and not report_updated,
+            },
+            "recent_launch_failed": recent_launch_failed,
+            "stalled_count": stalled_count,
+            "lock": lock,
+            "resampled_at": iso(now),
+        }
+    )
+    return refreshed
 
 
 def maybe_start_manager(
@@ -1977,22 +2248,56 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
 
     actions.extend(maybe_approve_pull_requests(root, pull_requests, args.approve_prs))
     actions.extend(stale_artifact_actions(root, now))
+    initial_scopes = scopes
+    initial_repos = repos
+    initial_manager = manager
+    initial_systemd_mail = systemd_mail
+    initial_runtime = runtime
+    initial_reports = reports
+    resampled_after_actions = bool(actions)
+    if resampled_after_actions:
+        resample_now = utcnow()
+        repos = {name: collect_repo(root, name, resample_now) for name in DEFAULT_REPOS}
+        manager = collect_manager(root, resample_now, args.manager_stale_minutes)
+        systemd_mail = collect_systemd_mail(resample_now)
+        runtime = collect_runtime_environment(root, resample_now, Path(args.godot_bin).resolve())
+        reports = collect_reports(root)
+        scopes = {
+            scope_id: refresh_scope_runtime(
+                root=root,
+                scope_id=scope_id,
+                scope=scope,
+                scope_state=initial_scopes[scope_id],
+                previous=previous,
+                now=resample_now,
+                same_hour=same_hour,
+            )
+            for scope_id, scope in DEFAULT_SCOPES.items()
+        }
+    final_generated_at = iso(utcnow())
     summary = {
         "version": 1,
-        "generated_at": iso(now),
+        "generated_at": final_generated_at,
         "hour_bucket": current_bucket,
         "root": str(root),
         "dry_run": bool(args.dry_run),
+        "resampled_after_actions": resampled_after_actions,
         "manager": manager,
+        "initial_manager": initial_manager,
         "keyring": keyring_public_summary(keyring),
         "key_assignments": key_assignments,
         "systemd_mail": systemd_mail,
+        "initial_systemd_mail": initial_systemd_mail,
         "runtime": runtime,
+        "initial_runtime": initial_runtime,
         "pull_requests": pull_requests,
         "reports": reports,
+        "initial_reports": initial_reports,
         "regression": regression,
         "repos": repos,
+        "initial_repos": initial_repos,
         "scopes": scopes,
+        "initial_scopes": initial_scopes,
         "actions": actions,
         "action_count": len(actions),
         "started_count": sum(1 for action in actions if (action.get("result") or {}).get("started")),
@@ -2008,6 +2313,21 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     if not args.dry_run:
         write_managed_reports(root, summary)
         summary["reports"] = collect_reports(root)
+        report_sample_now = utcnow()
+        summary["scopes"] = {
+            scope_id: refresh_scope_runtime(
+                root=root,
+                scope_id=scope_id,
+                scope=scope,
+                scope_state=summary["scopes"][scope_id],
+                previous=previous,
+                now=report_sample_now,
+                same_hour=same_hour,
+            )
+            for scope_id, scope in DEFAULT_SCOPES.items()
+        }
+        summary["generated_at"] = iso(report_sample_now)
+        summary["report_resampled_at"] = iso(report_sample_now)
         snapshot_path = snapshot_dir / f"{now.strftime('%Y%m%dT%H%M%SZ')}.json"
         write_json(snapshot_path, summary)
         summary["snapshot_path"] = str(snapshot_path)
