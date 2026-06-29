@@ -24,6 +24,8 @@ from typing import Any
 DEFAULT_REPOS = ("docs", "SpellKard", "Gensoulkyo", "PhK-BattleServer", "PhK-Protocol")
 DEFAULT_KEY_FILE = "/root/.codex/keys"
 DEFAULT_GODOT_LINUX = "/root/gotouhou/Godot_v4.7-stable_linux.x86_64"
+DEFAULT_GITHUB_PROXY = "socks5h://10.10.10.108:10808"
+DEFAULT_GH_PROXY = "socks5://10.10.10.108:10808"
 GOAL_MODE = "codex-/goal-active"
 GITHUB_ORG = "Phantasm-Klash"
 UTC = dt.timezone.utc
@@ -35,6 +37,7 @@ KEY_ALIAS_PREFERENCES: dict[str, tuple[str, ...]] = {
     "phk-battle-server": ("phk-battle-server", "phk", "battle-server", "battle", "other"),
     "change-describer": ("change-describer", "docs", "ops", "other"),
     "plan-auditor": ("plan-auditor", "docs", "ops", "other"),
+    "bugfix-spellkard-godot-headless": ("spellkard-ui", "spellkard-bullet", "spellkard", "other"),
     "manager": ("manager", "ops", "other"),
 }
 
@@ -51,6 +54,8 @@ GIT_FLOW_PROMPT = """版本控制和 PR 流程：
 - 推送分支并创建 PR；PR 正文必须包含变更摘要、测试结果、阻塞风险、是否涉及协议/网络/安全、是否需要 docs/dev 方向调整。
 - 除非 manager 明确授权合并，否则不要直接推 `main`。如果仓库规则允许绕过，也优先保留 PR 和分支历史。
 - 提交或推送前使用 `/root/gotouhou/.agents/locks/git-<repo>.lock`，避免同仓并发冲突。
+- watchdog 查出的代码回归必须开独立 `fix/<area>` 分支和 PR，测试通过后请求合并；若分支保护阻止合并，写入状态和邮件，不得假报已合并。
+- PR 审批前必须读 PR diff、相关 docs/dev 路线和测试结果；审批不等于自动合并。
 """
 
 
@@ -178,7 +183,28 @@ def snapshot_bucket(snapshot: dict[str, Any]) -> str | None:
     return None
 
 
-def run_command(command: list[str], cwd: Path, timeout: int = 20) -> tuple[int, str]:
+def command_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    env = os.environ.copy()
+    if extra:
+        env.update(extra)
+    return env
+
+
+def github_env() -> dict[str, str]:
+    env = command_env()
+    for name in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+        env.setdefault(name, DEFAULT_GITHUB_PROXY)
+    return env
+
+
+def gh_env() -> dict[str, str]:
+    env = command_env()
+    for name in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+        env.setdefault(name, DEFAULT_GH_PROXY)
+    return env
+
+
+def run_command(command: list[str], cwd: Path, timeout: int = 20, env: dict[str, str] | None = None) -> tuple[int, str]:
     try:
         completed = subprocess.run(
             command,
@@ -188,14 +214,15 @@ def run_command(command: list[str], cwd: Path, timeout: int = 20) -> tuple[int, 
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=timeout,
+            env=env,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return 127, str(exc)
     return completed.returncode, completed.stdout.strip()
 
 
-def run_json_command(command: list[str], cwd: Path, timeout: int = 30) -> Any:
-    code, output = run_command(command, cwd, timeout=timeout)
+def run_json_command(command: list[str], cwd: Path, timeout: int = 30, env: dict[str, str] | None = None) -> Any:
+    code, output = run_command(command, cwd, timeout=timeout, env=env)
     if code != 0 or not output:
         return None
     try:
@@ -340,6 +367,13 @@ def pid_alive(pid: int | None) -> bool:
     return True
 
 
+def systemd_unit_active(unit: str | None) -> bool:
+    if not unit:
+        return False
+    code, output = run_command(["systemctl", "is-active", unit], Path("/"), timeout=10)
+    return code == 0 and output.strip() == "active"
+
+
 def newest_file_mtime(paths: list[Path]) -> float | None:
     mtimes: list[float] = []
     for path in paths:
@@ -372,27 +406,37 @@ def collect_pull_requests(root: Path, now: dt.datetime) -> dict[str, Any]:
     repos: dict[str, Any] = {}
     for repo_name in DEFAULT_REPOS:
         repo_root = root / repo_name
-        payload = run_json_command(
-            [
-                "gh",
-                "pr",
-                "list",
-                "--repo",
-                f"{GITHUB_ORG}/{repo_name}",
-                "--state",
-                "open",
-                "--json",
-                "number,title,headRefName,baseRefName,author,isDraft,mergeStateStatus,url,updatedAt",
-            ],
-            repo_root if repo_root.exists() else root,
-            timeout=30,
-        )
+        command = [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            f"{GITHUB_ORG}/{repo_name}",
+            "--state",
+            "open",
+            "--json",
+            "number,title,headRefName,baseRefName,author,isDraft,mergeStateStatus,url,updatedAt",
+        ]
+        cwd = repo_root if repo_root.exists() else root
+        code, output = run_command(command, cwd, timeout=30, env=gh_env())
+        fallback_output = ""
+        if code != 0:
+            fallback_code, fallback_output = run_command(command, cwd, timeout=30)
+            if fallback_code == 0:
+                code, output = fallback_code, fallback_output
+        payload = None
+        if code == 0 and output:
+            try:
+                payload = json.loads(output)
+            except json.JSONDecodeError:
+                payload = None
         if isinstance(payload, list):
             repos[repo_name] = {
                 "repo": repo_name,
                 "open_count": len(payload),
                 "items": payload[:20],
                 "collected_at": iso(now),
+                "status": code,
             }
         else:
             repos[repo_name] = {
@@ -400,6 +444,8 @@ def collect_pull_requests(root: Path, now: dt.datetime) -> dict[str, Any]:
                 "open_count": None,
                 "items": [],
                 "error": "gh pr list failed or returned invalid JSON",
+                "status": code,
+                "output_tail": (output + ("\nfallback:\n" + fallback_output if fallback_output else ""))[-1000:],
                 "collected_at": iso(now),
             }
     return repos
@@ -412,6 +458,23 @@ def scoped_status(root: Path, scope: dict[str, Any]) -> tuple[str, str]:
     diffstat = run_git(repo, ["diff", "--stat", "--", *paths])
     text = "\n".join([status, diffstat]).strip()
     return text, sha256_text(text)
+
+
+def repo_has_foreign_active_work(root: Path, repo_name: str, scope_id: str, repos: dict[str, Any]) -> tuple[bool, str]:
+    repo = repos.get(repo_name) if isinstance(repos.get(repo_name), dict) else {}
+    branch = str(repo.get("branch", ""))
+    dirty_count = int(repo.get("dirty_count", 0) or 0)
+    if dirty_count <= 0:
+        return False, ""
+    if repo_name == "docs" and scope_id in {"change-describer", "plan-auditor"}:
+        return False, ""
+    if branch.startswith(f"agent/{scope_id}/"):
+        return False, ""
+    if branch.startswith("fix/"):
+        return True, f"{repo_name} is on dirty bugfix branch {branch}; defer normal scope {scope_id}"
+    if branch.startswith("agent/") and not branch.startswith(f"agent/{scope_id}/"):
+        return True, f"{repo_name} is on dirty branch {branch} owned by another scope; defer {scope_id}"
+    return True, f"{repo_name} has uncommitted work on {branch}; defer {scope_id}"
 
 
 def collect_manager(root: Path, now: dt.datetime, stale_minutes: int) -> dict[str, Any]:
@@ -765,6 +828,55 @@ def recent_log_mtime(root: Path, scope_id: str) -> float | None:
     return max(mtimes) if mtimes else None
 
 
+def latest_log_path(root: Path, scope_id: str) -> Path | None:
+    logs_dir = root / ".agents" / "logs"
+    if not logs_dir.exists():
+        return None
+    logs = [path for path in logs_dir.glob(f"{scope_id}*.log") if path.is_file()]
+    if not logs:
+        return None
+    return max(logs, key=lambda path: path.stat().st_mtime)
+
+
+def log_status(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {"exists": False}
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {"exists": True, "path": str(path), "error": str(exc)}
+    lines = text.splitlines()
+    useful_lines = [
+        line
+        for line in lines
+        if line.strip()
+        and not line.startswith("[watchdog] started")
+        and not line.startswith("[watchdog] exited")
+    ]
+    exited = any(line.startswith("[watchdog] exited status=") for line in lines)
+    exit_status: int | None = None
+    for line in reversed(lines):
+        if line.startswith("[watchdog] exited status="):
+            raw_status = line.rsplit("=", 1)[-1].strip()
+            try:
+                exit_status = int(raw_status)
+            except ValueError:
+                exit_status = None
+            break
+    return {
+        "exists": True,
+        "path": str(path),
+        "line_count": len(lines),
+        "useful_line_count": len(useful_lines),
+        "useful_hash": sha256_text("\n".join(useful_lines)) if useful_lines else "",
+        "started_only": len(lines) == 1 and bool(lines and lines[0].startswith("[watchdog] started")),
+        "exited": exited,
+        "exit_status": exit_status,
+        "updated_at": iso(dt.datetime.fromtimestamp(path.stat().st_mtime, UTC)),
+        "tail": "\n".join(lines[-6:])[-1000:],
+    }
+
+
 def report_path(root: Path, scope_id: str) -> Path | None:
     mapping = {
         "change-describer": root / ".agents" / "reports" / "change-summary-latest.md",
@@ -821,15 +933,32 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
     regression = summary.get("regression") if isinstance(summary.get("regression"), dict) else {}
 
     open_pr_count = 0
+    pr_sample_failures: list[str] = []
+    open_pr_lines: list[str] = []
     for raw_prs in pull_requests.values():
         prs = raw_prs if isinstance(raw_prs, dict) else {}
         count = prs.get("open_count")
         if isinstance(count, int):
             open_pr_count += count
+            for raw_pr in prs.get("items", []):
+                pr = raw_pr if isinstance(raw_pr, dict) else {}
+                open_pr_lines.append(
+                    f"- {prs.get('repo')}: PR #{pr.get('number')} `{pr.get('headRefName')}` -> `{pr.get('baseRefName')}`，"
+                    f"mergeState={pr.get('mergeStateStatus')}，{pr.get('url')}"
+                )
+        else:
+            pr_sample_failures.append(str(prs.get("repo", "unknown")))
 
     risk_lines: list[str] = []
     if summary.get("started_count", 0):
         risk_lines.append(f"- watchdog 本轮启动了 {summary.get('started_count')} 个 fallback/持续 agent，需要观察是否正常退出并清理 lock。")
+    stale_artifacts = [
+        action
+        for action in actions
+        if isinstance(action, dict) and action.get("type") == "artifact-stale"
+    ]
+    for action in stale_artifacts:
+        risk_lines.append(f"- {action.get('scope')} 报告/提示词未及时更新: {action.get('reason')}。")
     if regression.get("missing"):
         risk_lines.append("- 尚未找到最新回归检查 JSON，邮件只能报告环境能力，不能报告测试结果。")
     elif not regression.get("ok", False):
@@ -837,8 +966,22 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
         names = ", ".join(str(item.get("name")) for item in failed if isinstance(item, dict))
         risk_lines.append(f"- 最新回归检查未通过: {names or 'unknown'}。")
     active_locks = [scope_id for scope_id, raw_scope in scopes.items() if isinstance(raw_scope, dict) and (raw_scope.get("lock") or {}).get("alive")]
+    dead_locks = [
+        scope_id
+        for scope_id, raw_scope in scopes.items()
+        if isinstance(raw_scope, dict) and (raw_scope.get("lock") or {}).get("dead_unfinished")
+    ]
     if active_locks:
         risk_lines.append(f"- 当前仍有 active lock: {', '.join(active_locks)}。")
+    if dead_locks:
+        risk_lines.append(f"- watchdog 清理/发现死锁: {', '.join(dead_locks)}；旧 service 可能曾杀掉后台 agent。")
+    deferred_scopes = [
+        (scope_id, raw_scope.get("deferred_reason"))
+        for scope_id, raw_scope in scopes.items()
+        if isinstance(raw_scope, dict) and raw_scope.get("deferred")
+    ]
+    for scope_id, reason in deferred_scopes:
+        risk_lines.append(f"- {scope_id} 本轮暂缓启动以避免同仓并发冲突: {reason}。")
     if not godot.get("exists") or not godot.get("executable"):
         risk_lines.append("- Godot Linux headless 不可用，SpellKard 运行时验证会受阻。")
     if not docker.get("available") or not docker.get("docker_compose_available"):
@@ -850,8 +993,16 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
     missing_keys = [scope_id for scope_id, raw in key_assignments.items() if isinstance(raw, dict) and not raw.get("available")]
     if missing_keys:
         risk_lines.append(f"- 以下 scope 缺少 key alias: {', '.join(missing_keys)}。")
-    if open_pr_count == 0:
+    if pr_sample_failures:
+        risk_lines.append(f"- GitHub PR 采样失败: {', '.join(pr_sample_failures)}；不得把采样失败当成无 PR。")
+    elif open_pr_count == 0:
         risk_lines.append("- 当前五个仓库没有打开的 PR；后续开发应走 feature branch + PR，不再直接推 main。")
+    bugfix_actions = [action for action in actions if isinstance(action, dict) and str(action.get("type", "")).startswith("bugfix")]
+    for action in bugfix_actions:
+        if action.get("type") == "bugfix-pr-open":
+            risk_lines.append(
+                f"- SpellKard Godot 回归已有修复 PR #{action.get('number')}，mergeState={action.get('mergeStateStatus')}，等待分支保护审批/合并。"
+            )
     if not risk_lines:
         risk_lines.append("- 未发现新的阻塞风险。")
 
@@ -870,7 +1021,7 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
         f"- docs/ops 当前策略要求 feature branch、阶段性 commit、PR 审批流程，不再默认直接推 main。",
         f"- Godot Linux: `{godot.get('path', DEFAULT_GODOT_LINUX)}`，exists={godot.get('exists')}，executable={godot.get('executable')}，version={godot.get('version', '')}。",
         f"- Docker: available={docker.get('available')}，docker-compose={docker.get('docker_compose_available')}，version={docker.get('docker_compose_version', '')}。",
-        f"- 当前 open PR 总数: {open_pr_count}；PR 审批动作数: {sum(1 for action in actions if str(action.get('type', '')).startswith('pr-'))}。",
+        f"- 当前 open PR 总数: {'unknown' if pr_sample_failures else open_pr_count}；PR 审批动作数: {sum(1 for action in actions if str(action.get('type', '')).startswith('pr-'))}。",
         f"- 最新回归检查: ok={regression.get('ok', 'unknown')}，failed_count={regression.get('failed_count', 'unknown')}，generated_at={regression.get('generated_at', 'missing')}。",
         "",
         "## Agent 状态",
@@ -881,8 +1032,16 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
         lines.append(
             f"- {scope_id}: status={scope.get('status')}，repo={scope.get('repo')}，"
             f"progress={scope.get('progress')}，stalled={scope.get('stalled_count')}，"
-            f"lock_alive={(scope.get('lock') or {}).get('alive')}。"
+            f"deferred={scope.get('deferred')}，lock_alive={(scope.get('lock') or {}).get('alive')}。"
         )
+
+    lines.extend(["", "## PR 状态", ""])
+    if pr_sample_failures:
+        lines.append(f"- 采样失败: {', '.join(pr_sample_failures)}。")
+    elif open_pr_lines:
+        lines.extend(open_pr_lines)
+    else:
+        lines.append("- 当前未发现 open PR。")
 
     lines.extend(["", "## 阻塞/风险", "", *risk_lines, "", "## 下一小时建议", ""])
     lines.extend(
@@ -906,24 +1065,35 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
     regression = summary.get("regression") if isinstance(summary.get("regression"), dict) else {}
 
     open_pr_count = 0
+    pr_sample_failures: list[str] = []
+    blocked_prs: list[str] = []
     for raw_prs in pull_requests.values():
         prs = raw_prs if isinstance(raw_prs, dict) else {}
         count = prs.get("open_count")
         if isinstance(count, int):
             open_pr_count += count
+            for raw_pr in prs.get("items", []):
+                pr = raw_pr if isinstance(raw_pr, dict) else {}
+                if pr.get("mergeStateStatus") == "BLOCKED":
+                    blocked_prs.append(f"- {prs.get('repo')}: PR #{pr.get('number')} `{pr.get('headRefName')}` 被分支保护或检查规则阻塞。")
+        else:
+            pr_sample_failures.append(str(prs.get("repo", "unknown")))
 
     direct_main_risks: list[str] = []
     for repo_name, raw_repo in sorted(repos.items()):
         repo = raw_repo if isinstance(raw_repo, dict) else {}
         status = str(repo.get("status", ""))
         commits = repo.get("commits_last_hour") if isinstance(repo.get("commits_last_hour"), list) else []
-        if repo.get("branch") == "main" and commits and open_pr_count == 0:
+        if repo.get("branch") == "main" and commits and not pr_sample_failures and open_pr_count == 0:
             direct_main_risks.append(f"- {repo_name}: main 分支近一小时有提交但当前没有 open PR，需要确认是否为授权 hotfix。")
 
     docker_files = docker.get("repo_files") if isinstance(docker.get("repo_files"), dict) else {}
     flow_risks = list(direct_main_risks)
-    if open_pr_count == 0:
+    if pr_sample_failures:
+        flow_risks.append(f"- GitHub PR 采样失败: {', '.join(pr_sample_failures)}；流程审计不能把失败当成无 PR。")
+    elif open_pr_count == 0:
         flow_risks.append("- 当前无 open PR；后续开发应补齐 feature branch + PR 轨迹。")
+    flow_risks.extend(blocked_prs)
     if not godot.get("exists") or not godot.get("executable"):
         flow_risks.append("- Godot Linux headless 不可用，SpellKard 阶段验证不完整。")
     if not docker.get("docker_compose_available"):
@@ -987,7 +1157,7 @@ def managed_change_describer_prompt() -> str:
 
 摘要必须包含：更新前服务器状态、更新后服务器状态、本小时完成内容、Agent 状态、阻塞/风险、下一小时建议。
 
-必须写入风险：报告未更新、agent lock 残留、未走 feature branch + PR、Godot Linux headless 未跑、服务端 Docker/`docker-compose` 回归缺失、watchdog/邮件异常、key alias 缺失。服务器无显卡导致的纯 Godot 渲染器失败可以写为 ignored/blocked，不算功能失败；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败仍必须写为真实阻塞。不得泄露 SMTP 密码、token、私钥、API key 或任何凭据；可以写 key alias 和 scope，不能写 key value。只允许写 `.agents` 下指定报告和提示词，不修改 git 仓库，不提交，不推送。
+必须写入风险：报告未更新、agent lock 残留或 started-only 日志、dead lock 被清理、未走 feature branch + PR、PR 采样失败、bugfix PR 被分支保护阻塞、Godot Linux headless 未跑、服务端 Docker/`docker-compose` 回归缺失、watchdog/邮件异常、key alias 缺失。服务器无显卡导致的纯 Godot 渲染器失败可以写为 ignored/blocked，不算功能失败；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败仍必须写为真实阻塞。不得泄露 SMTP 密码、token、私钥、API key 或任何凭据；可以写 key alias 和 scope，不能写 key value。只允许写 `.agents` 下指定报告和提示词，不修改 git 仓库，不提交，不推送。写报告必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
 """
 
 
@@ -998,9 +1168,9 @@ def managed_plan_auditor_prompt() -> str:
 
 每轮读取 `/root/gotouhou/docs/dev/progress.md` 与 `/root/gotouhou/docs/dev/gotouhou/**/*.md`，再检查五个子仓库状态、branch/PR 形态、最近提交、最新 watchdog summary、Godot Linux headless 能力、Docker/`docker-compose` 回归能力和 open PR。判断新增功能与开发流程是否符合 Phase 2/3/6/8、网络安全、Nakama、大厅/房间、C++ BattleServer、Godot UI/弹幕路线。
 
-必须审计：是否缺阶段性 commit、是否直接推 main、是否缺 PR、PR 是否读完代码和路线后再审批、SpellKard 是否用 Linux Godot headless 验证、服务端是否使用 Docker/`docker-compose` 或记录缺口、邮件内容是否及时反映 agent 状态和阻塞风险。服务器无显卡导致的纯 Godot 渲染器失败可以忽略为环境 blocked；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败不能忽略。
+必须审计：是否缺阶段性 commit、是否直接推 main、是否缺 PR、PR 是否读完代码和路线后再审批、watchdog 查出的代码问题是否开独立 bugfix 分支/PR、SpellKard 是否用 Linux Godot headless 验证、服务端是否使用 Docker/`docker-compose` 或记录缺口、邮件内容是否及时反映 agent 状态和阻塞风险。started-only 日志、dead lock、报告未更新都算 agent 未正常执行，不得当成正常运行。服务器无显卡导致的纯 Godot 渲染器失败可以忽略为环境 blocked；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败不能忽略。
 
-输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`，同时更新本提示词文件。只允许写 `.agents` 下指定文件，不修改 git 仓库，不提交，不推送。不得泄露凭据。结论必须明确“符合/偏离/建议调整”，并给出可直接交给后续 worker 的中文提示词。
+输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`，同时更新本提示词文件。只允许写 `.agents` 下指定文件，不修改 git 仓库，不提交，不推送。不得泄露凭据。结论必须明确“符合/偏离/建议调整”，并给出可直接交给后续 worker 的中文提示词。写报告必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
 """
 
 
@@ -1022,19 +1192,52 @@ def lock_path(root: Path, scope_id: str) -> Path:
 def lock_status(path: Path, now: dt.datetime, stale_minutes: int = 240) -> dict[str, Any]:
     payload = read_json(path, {})
     pid = payload.get("pid") if isinstance(payload, dict) else None
+    unit = payload.get("unit") if isinstance(payload, dict) else None
     started = parse_iso(payload.get("started_at") if isinstance(payload, dict) else None)
-    alive = pid_alive(pid if isinstance(pid, int) else None)
+    unit_active = systemd_unit_active(unit if isinstance(unit, str) else None)
+    alive = pid_alive(pid if isinstance(pid, int) else None) or unit_active
+    log = log_status(Path(str(payload.get("log_path"))) if isinstance(payload, dict) and payload.get("log_path") else None)
     stale = False
+    age_seconds = None
     if started is not None:
-        stale = (now - started).total_seconds() > stale_minutes * 60
+        age_seconds = max(0, int((now - started).total_seconds()))
+        stale = age_seconds > stale_minutes * 60
+    dead_unfinished = bool(path.exists() and not alive and log.get("exists") and not log.get("exited"))
     return {
         "path": str(path),
         "exists": path.exists(),
         "pid": pid,
+        "unit": unit,
+        "unit_active": unit_active,
         "alive": alive,
         "stale": stale,
+        "dead_unfinished": dead_unfinished,
+        "age_seconds": age_seconds,
         "started_at": iso(started) if started else None,
+        "log": log,
     }
+
+
+def cleanup_dead_lock(path: Path, status: dict[str, Any], dry_run: bool) -> dict[str, Any] | None:
+    if not status.get("exists") or status.get("alive"):
+        return None
+    if not (status.get("dead_unfinished") or status.get("stale")):
+        return None
+    action = {
+        "type": "cleanup-dead-lock",
+        "reason": "dead lock process with no completed watchdog exit" if status.get("dead_unfinished") else "stale lock process not alive",
+        "lock": str(path),
+        "lock_status": status,
+        "dry_run": dry_run,
+    }
+    if not dry_run:
+        try:
+            path.unlink()
+            action["removed"] = True
+        except OSError as exc:
+            action["removed"] = False
+            action["error"] = str(exc)
+    return action
 
 
 def prompt_key_line(key_assignment: dict[str, Any]) -> str:
@@ -1086,6 +1289,7 @@ Allowed paths:
 
 Implementation requirements:
 - Continue the current main branch work for this scope using the optimized direction above.
+- Read `/root/gotouhou/docs/dev/progress.md` and the scoped `docs/dev/gotouhou` route before coding; if the plan direction has shifted, update your PR summary and final status.
 - Keep changes inside the allowed paths.
 - Use UTF-8 and Linux LF.
 - Run the relevant local checks for the repository.
@@ -1093,6 +1297,7 @@ Implementation requirements:
 - Gensoulkyo and PhK-BattleServer scopes should prefer Docker/`docker-compose` regression where repository files exist; if no Dockerfile/compose exists, run local checks and record that Docker coverage is blocked.
 - For network/protocol/server scopes, run `/root/gotouhou/docs/ops/protocol_audit_check.py`.
 - Push the feature branch and create a PR. Do not push directly to `main` unless the manager explicitly authorizes an emergency hotfix.
+- If watchdog/regression reveals a code failure in your scope, switch to a dedicated `fix/<area>` branch/PR first; after tests pass, request merge and report any branch protection blocker.
 - Write a concise final status to `/root/gotouhou/.agents/logs/{scope_id}-final.md`.
 """
 
@@ -1185,11 +1390,42 @@ work directly without reverting unrelated edits. Keep `/root/gotouhou/.agents`
 updated. Use branch + PR flow for repository changes; do not directly push main
 except for explicit emergency hotfixes authorized by the manager.
 
+If watchdog regression finds code failures, create or monitor a dedicated
+bugfix branch/PR. Once tests pass, read the PR diff and related docs/dev route,
+approve when appropriate, then attempt merge only within repository policy. If
+branch protection blocks merging, record the PR URL and blocker in manager
+status and hourly mail.
+
 Use the optimized direction from `/root/gotouhou/.agents/reports/plan-audit-latest.md`
 when deciding the next worker prompt. Keep key values secret; state only aliases.
 Make sure hourly mail content is based on the latest watchdog snapshot, locks,
 reports, branch/PR state, Godot Linux availability, and Docker/`docker-compose`
 test capability.
+"""
+
+
+def bugfix_prompt(scope_id: str, reason: str, key_assignment: dict[str, Any], failures: list[dict[str, Any]]) -> str:
+    failure_lines = "\n".join(
+        f"- {item.get('name')} status={item.get('status')} blocked={item.get('blocked', False)}"
+        for item in failures
+    )
+    return f"""{goal_prompt_preamble(scope_id, reason, key_assignment)}
+
+你是 gotouhou watchdog 代码回归修复 agent。
+
+工作区：`/root/gotouhou/SpellKard`
+分支：从最新 `origin/main` 创建或继续 `fix/godot-headless-regressions`
+目标：修复 watchdog/Godot Linux headless 查出的非渲染代码回归；纯服务器无显卡导致的 renderer/RenderingDevice 失败可以标记为环境 blocked，但 GDScript parse/compile/type error、脚本加载失败、UI/弹幕合同失败必须修复。
+
+当前失败：
+{failure_lines or "- 未提供失败明细，请读取 /root/gotouhou/.agents/checks/latest-regression.json。"}
+
+必须执行：
+- 先读 `/root/gotouhou/docs/dev/progress.md`、`docs/dev/gotouhou/01_core_stg_client/bullet_pattern_system.md`、`docs/dev/gotouhou/05_content_assets_ui/ui_screens.md` 和最新 regression JSON。
+- 只修改 SpellKard 中与 Godot headless 回归相关的最小文件集，不回滚他人改动。
+- 使用 `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` 从 `/root/gotouhou/SpellKard/godot` 运行 `../tools/client_smoke_test.gd`、`../tools/client_ui_smoke_test.gd`、`../tools/boss_pattern_catalog_check.gd` 或等价最小检查。
+- 阶段性 commit，推送 bugfix 分支，创建 PR；PR 正文写明测试结果、忽略的纯渲染环境问题和未解决风险。
+- 测试通过后请求合并；如果分支保护或权限阻止合并，把 PR URL 和阻塞原因写入 `/root/gotouhou/.agents/logs/{scope_id}-final.md`。
 """
 
 
@@ -1203,17 +1439,19 @@ def start_background_codex(
     key_assignment: dict[str, Any],
     key_value: str | None,
     dry_run: bool,
-) -> dict[str, Any]:
+    ) -> dict[str, Any]:
     now = utcnow()
     agents_dir = root / ".agents"
     locks_dir = agents_dir / "locks"
     logs_dir = agents_dir / "logs"
     prompts_dir = agents_dir / "prompts"
+    run_dir = agents_dir / "run"
     lock = lock_path(root, scope_id)
     current_lock = lock_status(lock, now)
     key_alias = key_assignment.get("alias")
     if current_lock["alive"]:
         return {"started": False, "reason": "lock-active", "lock": current_lock, "key_alias": key_alias}
+    cleanup_dead_lock(lock, current_lock, dry_run=dry_run)
     if dry_run:
         return {"started": False, "reason": "dry-run", "lock": current_lock, "key_alias": key_alias}
     if not key_value:
@@ -1228,9 +1466,11 @@ def start_background_codex(
     locks_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
     prompts_dir.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
     prompt_path = prompts_dir / f"{scope_id}-{stamp}.txt"
     log_path = logs_dir / f"{scope_id}-{stamp}.log"
+    runner_path = run_dir / f"{scope_id}-{stamp}.sh"
     prompt_path.write_text(prompt, encoding="utf-8", newline="\n")
 
     quoted_lock = shlex.quote(str(lock))
@@ -1239,48 +1479,119 @@ def start_background_codex(
     quoted_codex = shlex.quote(codex_bin)
     quoted_cwd = shlex.quote(str(cwd))
     quoted_root = shlex.quote(str(root))
-    script = (
-        "set -u; "
-        f"trap 'rm -f {quoted_lock}' EXIT; "
-        f"echo '[watchdog] started {scope_id} at {iso(now)}' >> {quoted_log}; "
-        f"cd {quoted_cwd}; "
-        f"{quoted_codex} exec --dangerously-bypass-approvals-and-sandbox "
-        f"--add-dir {quoted_root} -C {quoted_cwd} - < {quoted_prompt} >> {quoted_log} 2>&1; "
-        f"status=$?; echo '[watchdog] exited status='$status >> {quoted_log}; exit $status"
+    unit = f"gotouhou-agent-{scope_id}-{stamp}".replace("_", "-").replace("/", "-")
+    script = "\n".join(
+        [
+            "#!/bin/sh",
+            "set -u",
+            f"KEY_FILE={shlex.quote(str(Path(DEFAULT_KEY_FILE)))}",
+            f"KEY_ALIAS={shlex.quote(str(key_alias or ''))}",
+            "KEY_VALUE=$(/usr/bin/python3 - \"$KEY_FILE\" \"$KEY_ALIAS\" <<'PY'",
+            "import sys",
+            "key_file, wanted = sys.argv[1], sys.argv[2]",
+            "with open(key_file, encoding='utf-8', errors='replace') as handle:",
+            "    for index, line in enumerate(handle, start=1):",
+            "        stripped = line.strip()",
+            "        if not stripped or stripped.startswith('#'):",
+            "            continue",
+            "        if ':' in stripped and not stripped.startswith('sk-'):",
+            "            alias, value = stripped.split(':', 1)",
+            "        elif '=' in stripped:",
+            "            alias, value = stripped.split('=', 1)",
+            "        else:",
+            "            alias, value = f'key{index}', stripped",
+            "        if alias.strip() == wanted:",
+            "            print(value.strip())",
+            "            raise SystemExit(0)",
+            "raise SystemExit(1)",
+            "PY",
+            ")",
+            f"if [ -z \"$KEY_VALUE\" ]; then echo '[watchdog] missing key alias {key_alias}' >> {quoted_log}; exit 2; fi",
+            "export OPENAI_API_KEY=\"$KEY_VALUE\" CODEX_API_KEY=\"$KEY_VALUE\"",
+            "unset KEY_VALUE",
+            f"trap 'rm -f {quoted_lock}' EXIT",
+            f"echo '[watchdog] started {scope_id} at {iso(now)}' >> {quoted_log}",
+            f"cd {quoted_cwd}",
+            f"{quoted_codex} exec --dangerously-bypass-approvals-and-sandbox --add-dir {quoted_root} -C {quoted_cwd} - < {quoted_prompt} >> {quoted_log} 2>&1",
+            "status=$?",
+            f"echo '[watchdog] exited status='$status >> {quoted_log}",
+            "exit $status",
+        ]
     )
+    runner_path.write_text(script + "\n", encoding="utf-8", newline="\n")
+    runner_path.chmod(0o700)
+    base_lock_payload = {
+        "scope": scope_id,
+        "pid": None,
+        "unit": unit,
+        "launcher": "pending",
+        "started_at": iso(now),
+        "prompt_path": str(prompt_path),
+        "runner_path": str(runner_path),
+        "log_path": str(log_path),
+        "cwd": str(cwd),
+        "key_alias": key_alias,
+    }
+    write_json(lock, base_lock_payload)
     try:
-        env = os.environ.copy()
-        env["OPENAI_API_KEY"] = key_value
-        env["CODEX_API_KEY"] = key_value
-        process = subprocess.Popen(
-            ["/bin/sh", "-c", script],
-            cwd=str(cwd),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=env,
-            start_new_session=True,
-        )
+        if Path("/usr/bin/systemd-run").exists():
+            command = [
+                "/usr/bin/systemd-run",
+                "--unit",
+                unit,
+                "--collect",
+                "--property=WorkingDirectory=" + str(cwd),
+                "/bin/sh",
+                str(runner_path),
+            ]
+            code, output = run_command(command, cwd, timeout=20)
+            if code != 0:
+                try:
+                    lock.unlink()
+                except OSError:
+                    pass
+                return {
+                    "started": False,
+                    "reason": f"systemd-run-failed: {output[-1000:]}",
+                    "lock": current_lock,
+                    "key_alias": key_alias,
+                    "unit": unit,
+                }
+            pid: int | None = None
+            launcher = "systemd-run"
+            launch_output = output[-1000:]
+        else:
+            process = subprocess.Popen(
+                ["/bin/sh", str(runner_path)],
+                cwd=str(cwd),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=os.environ.copy(),
+                start_new_session=True,
+            )
+            pid = process.pid
+            launcher = "popen"
+            launch_output = ""
     except OSError as exc:
+        try:
+            lock.unlink()
+        except OSError:
+            pass
         return {"started": False, "reason": f"spawn-failed: {exc}", "lock": current_lock, "key_alias": key_alias}
 
-    write_json(
-        lock,
-        {
-            "scope": scope_id,
-            "pid": process.pid,
-            "started_at": iso(now),
-            "prompt_path": str(prompt_path),
-            "log_path": str(log_path),
-            "cwd": str(cwd),
-            "key_alias": key_alias,
-        },
-    )
+    base_lock_payload["pid"] = pid
+    base_lock_payload["launcher"] = launcher
+    write_json(lock, base_lock_payload)
     return {
         "started": True,
         "reason": "spawned",
-        "pid": process.pid,
+        "pid": pid,
+        "unit": unit,
+        "launcher": launcher,
+        "launch_output": launch_output,
         "prompt_path": str(prompt_path),
+        "runner_path": str(runner_path),
         "log_path": str(log_path),
         "lock": str(lock),
         "key_alias": key_alias,
@@ -1300,12 +1611,15 @@ def evaluate_scope(
     codex_bin: str,
     key_assignment: dict[str, Any],
     key_value: str | None,
+    repos: dict[str, Any],
     dry_run: bool,
 ) -> dict[str, Any]:
     scoped_text, diff_hash = scoped_status(root, scope)
     repo = str(scope["repo"])
     current_head = run_git(root / repo, ["rev-parse", "--short", "HEAD"]) or ""
-    log_mtime = recent_log_mtime(root, scope_id)
+    latest_log = latest_log_path(root, scope_id)
+    log = log_status(latest_log)
+    log_mtime = latest_log.stat().st_mtime if latest_log and latest_log.exists() else None
     previous_scope = ((previous or {}).get("scopes") or {}).get(scope_id, {})
     previous_repo = ((previous or {}).get("repos") or {}).get(repo, {})
 
@@ -1314,13 +1628,29 @@ def evaluate_scope(
         or roster_entry.get("agent_id")
         or roster_entry.get("last_started_at")
     )
-    lock = lock_status(lock_path(root, scope_id), now)
-    previous_log_mtime = previous_scope.get("log_mtime")
+    actions: list[dict[str, Any]] = []
+    deferred = False
+    deferred_reason = ""
+    has_foreign_work, foreign_reason = repo_has_foreign_active_work(root, repo, scope_id, repos)
+    if has_foreign_work:
+        deferred = True
+        deferred_reason = foreign_reason
+        actions.append({"type": "scope-deferred", "scope": scope_id, "repo": repo, "reason": foreign_reason})
+    lock_file = lock_path(root, scope_id)
+    lock = lock_status(lock_file, now)
+    cleanup_action = cleanup_dead_lock(lock_file, lock, dry_run=dry_run)
+    if cleanup_action:
+        actions.append(cleanup_action)
+        lock = lock_status(lock_file, now)
+        roster_entry["status"] = "failed"
+        roster_entry["last_failure_reason"] = cleanup_action.get("reason")
+
+    previous_log_hash = previous_scope.get("log_useful_hash")
     progress = bool(
         previous is None
         or current_head != previous_repo.get("head")
         or diff_hash != previous_scope.get("diff_hash")
-        or (log_mtime is not None and log_mtime != previous_log_mtime)
+        or (log.get("useful_hash") and log.get("useful_hash") != previous_log_hash)
     )
     scope_report_path = report_path(root, scope_id)
     if scope_report_path and scope_report_path.exists():
@@ -1329,27 +1659,43 @@ def evaluate_scope(
             progress = True
     else:
         report_mtime = None
+    recent_launch_failed = bool(lock.get("dead_unfinished"))
+    fallback_log_path = roster_entry.get("fallback_log_path") if isinstance(roster_entry.get("fallback_log_path"), str) else ""
+    if fallback_log_path and latest_log and Path(fallback_log_path) == latest_log and not log.get("exited"):
+        recent_launch_failed = True
+    if recent_launch_failed:
+        progress = False
 
     if same_hour:
         stalled_count = int(previous_scope.get("stalled_count", 0))
     else:
         stalled_count = 0 if progress else int(previous_scope.get("stalled_count", 0)) + 1
 
-    actions: list[dict[str, Any]] = []
     action_reason = ""
     should_start = False
     completed = roster_entry.get("status") == "completed"
     continuous = bool(scope.get("continuous"))
-    if completed and not continuous:
-        stalled_count = 0
-    if continuous:
+    last_started = parse_iso(roster_entry.get("last_started_at") if isinstance(roster_entry.get("last_started_at"), str) else None)
+    started_this_hour = bool(last_started and hour_bucket(last_started) == hour_bucket(now))
+    if deferred:
+        should_start = False
+    elif lock.get("alive"):
+        should_start = False
+    elif recent_launch_failed:
+        should_start = True
+        action_reason = "previous agent launch died before useful output"
+    elif continuous:
         last_started = parse_iso(roster_entry.get("last_started_at") if isinstance(roster_entry.get("last_started_at"), str) else None)
         started_this_hour = bool(last_started and hour_bucket(last_started) == hour_bucket(now))
         if not started_this_hour:
             should_start = True
             action_reason = "scheduled hourly continuous scope"
-    elif completed:
-        should_start = False
+        elif not progress and stalled_count >= 1:
+            should_start = True
+            action_reason = "continuous scope produced no useful report update"
+    elif completed and not started_this_hour:
+        should_start = True
+        action_reason = "completed scope needs sustained /goal continuation"
     elif not record_exists:
         should_start = True
         action_reason = "missing active/completed roster record"
@@ -1386,9 +1732,14 @@ def evaluate_scope(
         "diff_hash": diff_hash,
         "scoped_dirty": scoped_text.splitlines()[:20],
         "log_mtime": log_mtime,
+        "log_useful_hash": log.get("useful_hash"),
+        "log": log,
         "report_mtime": report_mtime,
         "last_seen_at": roster_entry.get("last_seen_at"),
         "progress": progress,
+        "recent_launch_failed": recent_launch_failed,
+        "deferred": deferred,
+        "deferred_reason": deferred_reason,
         "stalled_count": stalled_count,
         "lock": lock,
         "key_alias": key_assignment.get("alias"),
@@ -1426,6 +1777,100 @@ def maybe_start_manager(
     }
 
 
+def open_pr_for_branch(pull_requests: dict[str, Any], repo_name: str, branch: str) -> dict[str, Any] | None:
+    repo_info = pull_requests.get(repo_name) if isinstance(pull_requests.get(repo_name), dict) else {}
+    for raw_pr in repo_info.get("items", []):
+        pr = raw_pr if isinstance(raw_pr, dict) else {}
+        if pr.get("headRefName") == branch:
+            return pr
+    return None
+
+
+def maybe_start_regression_bugfix(
+    *,
+    root: Path,
+    regression: dict[str, Any],
+    pull_requests: dict[str, Any],
+    codex_bin: str,
+    key_assignment: dict[str, Any],
+    key_value: str | None,
+    dry_run: bool,
+) -> dict[str, Any] | None:
+    failed = regression.get("failed") if isinstance(regression.get("failed"), list) else []
+    spellkard_failures = [
+        item
+        for item in failed
+        if isinstance(item, dict)
+        and not item.get("blocked")
+        and str(item.get("name", "")).startswith("spellkard-")
+    ]
+    if not spellkard_failures:
+        return None
+    existing_pr = open_pr_for_branch(pull_requests, "SpellKard", "fix/godot-headless-regressions")
+    if existing_pr:
+        return {
+            "type": "bugfix-pr-open",
+            "repo": "SpellKard",
+            "scope": "bugfix-spellkard-godot-headless",
+            "reason": "SpellKard headless regression has open bugfix PR",
+            "url": existing_pr.get("url"),
+            "number": existing_pr.get("number"),
+            "mergeStateStatus": existing_pr.get("mergeStateStatus"),
+        }
+    scope_id = "bugfix-spellkard-godot-headless"
+    reason = "watchdog found SpellKard non-renderer headless regression"
+    return {
+        "type": "start-bugfix-agent",
+        "scope": scope_id,
+        "repo": "SpellKard",
+        "reason": reason,
+        "failures": spellkard_failures,
+        "result": start_background_codex(
+            root=root,
+            scope_id=scope_id,
+            prompt=bugfix_prompt(scope_id, reason, key_assignment, spellkard_failures),
+            cwd=root / "SpellKard",
+            codex_bin=codex_bin,
+            key_assignment=key_assignment,
+            key_value=key_value,
+            dry_run=dry_run,
+        ),
+    }
+
+
+def stale_artifact_actions(root: Path, now: dt.datetime) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    prompt_names = {
+        "change-describer": "change-describer.md",
+        "plan-auditor": "plan-auditor.md",
+    }
+    for scope_id, prompt_name in prompt_names.items():
+        prompt = root / ".agents" / "agent-prompts" / prompt_name
+        report = report_path(root, scope_id)
+        if report is None:
+            continue
+        if not prompt.exists():
+            actions.append({"type": "artifact-stale", "scope": scope_id, "reason": "managed prompt file missing", "path": str(prompt)})
+        if not report.exists():
+            lock = lock_status(lock_path(root, scope_id), now)
+            if lock.get("alive") and (lock.get("age_seconds") or 0) < 20 * 60:
+                continue
+            actions.append({"type": "artifact-stale", "scope": scope_id, "reason": "managed report file missing", "path": str(report)})
+            continue
+        age_seconds = max(0, int(now.timestamp() - report.stat().st_mtime))
+        if age_seconds > 90 * 60:
+            actions.append(
+                {
+                    "type": "artifact-stale",
+                    "scope": scope_id,
+                    "reason": f"managed report stale for {age_seconds} seconds",
+                    "path": str(report),
+                    "age_seconds": age_seconds,
+                }
+            )
+    return actions
+
+
 def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     now = utcnow()
     current_bucket = hour_bucket(now)
@@ -1444,6 +1889,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     keyring = load_keyring(key_file)
     key_assignments = {scope_id: select_key_alias(scope_id, keyring) for scope_id in DEFAULT_SCOPES}
     key_assignments["manager"] = select_key_alias("manager", keyring)
+    key_assignments["bugfix-spellkard-godot-headless"] = select_key_alias("bugfix-spellkard-godot-headless", keyring)
     latest_snapshot = load_previous_snapshot(snapshot_dir)
     previous = load_previous_distinct_snapshot(snapshot_dir, current_bucket) or latest_snapshot
     same_hour = bool(latest_snapshot and snapshot_bucket(latest_snapshot) == current_bucket)
@@ -1452,6 +1898,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     systemd_mail = collect_systemd_mail(now)
     runtime = collect_runtime_environment(root, now, Path(args.godot_bin).resolve())
     pull_requests = collect_pull_requests(root, now)
+    regression = collect_regression(root)
     actions: list[dict[str, Any]] = []
     manager_action = maybe_start_manager(
         root=root,
@@ -1480,6 +1927,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             codex_bin=args.codex_bin,
             key_assignment=key_assignment,
             key_value=selected_key_value(key_assignment, keyring),
+            repos=repos,
             dry_run=args.dry_run,
         )
         entry["last_seen_at"] = iso(now)
@@ -1489,10 +1937,21 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         entry["key_alias"] = key_assignment.get("alias")
         actions.extend(scopes[scope_id]["actions"])
 
-    actions.extend(maybe_approve_pull_requests(root, pull_requests, args.approve_prs))
-
     reports = collect_reports(root)
-    regression = collect_regression(root)
+    bugfix_action = maybe_start_regression_bugfix(
+        root=root,
+        regression=regression,
+        pull_requests=pull_requests,
+        codex_bin=args.codex_bin,
+        key_assignment=key_assignments["bugfix-spellkard-godot-headless"],
+        key_value=selected_key_value(key_assignments["bugfix-spellkard-godot-headless"], keyring),
+        dry_run=args.dry_run,
+    )
+    if bugfix_action:
+        actions.append(bugfix_action)
+
+    actions.extend(maybe_approve_pull_requests(root, pull_requests, args.approve_prs))
+    actions.extend(stale_artifact_actions(root, now))
     summary = {
         "version": 1,
         "generated_at": iso(now),

@@ -6,8 +6,11 @@ DOCS="$ROOT/docs"
 AGENTS="$ROOT/.agents"
 SUMMARY="$AGENTS/last-watchdog-summary.json"
 ERROR_LOG="$AGENTS/watchdog-last-error.log"
+REGRESSION_LOG="$AGENTS/regression-last-run.log"
 
 mkdir -p "$AGENTS"
+
+/usr/bin/python3 "$DOCS/ops/run_regression_checks.py" --root "$ROOT" > "$REGRESSION_LOG" 2>&1 || true
 
 if /usr/bin/python3 "$DOCS/ops/agent_watchdog.py" --root "$ROOT" > "$AGENTS/watchdog-last-run.json" 2> "$ERROR_LOG"; then
   rm -f "$ERROR_LOG"

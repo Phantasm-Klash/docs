@@ -5,4 +5,5 @@ Description=Send gotouhou hourly development progress email
 Type=oneshot
 WorkingDirectory=/root/gotouhou/docs
 EnvironmentFile=-/etc/gotouhou/progress-mail.env
+TimeoutStartSec=20min
 ExecStart=/bin/sh /root/gotouhou/docs/ops/hourly_progress_runner.sh

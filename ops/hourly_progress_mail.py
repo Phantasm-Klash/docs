@@ -169,7 +169,17 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
         lines.append("PR 状态:")
         for repo_name, raw_prs in sorted(pull_requests.items()):
             prs = raw_prs if isinstance(raw_prs, dict) else {}
-            lines.append(f"- {repo_name}: open={prs.get('open_count', 'unknown')}")
+            line = f"- {repo_name}: open={prs.get('open_count', 'unknown')}"
+            if prs.get("error"):
+                line += f" error={prs.get('error')}"
+            lines.append(line)
+            items = prs.get("items") if isinstance(prs.get("items"), list) else []
+            for item in items[:5]:
+                if isinstance(item, dict):
+                    lines.append(
+                        f"  PR #{item.get('number')} {item.get('headRefName')} -> {item.get('baseRefName')} "
+                        f"mergeState={item.get('mergeStateStatus')} {item.get('url')}"
+                    )
 
     if regression:
         lines.append("")
@@ -199,6 +209,7 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
                 f"{scope_id}: status={scope.get('status', 'unknown')} "
                 f"progress={scope.get('progress', 'unknown')} "
                 f"stalled={scope.get('stalled_count', 'unknown')} "
+                f"deferred={scope.get('deferred', False)} "
                 f"repo={scope.get('repo', 'unknown')} "
                 f"actions={action_count}"
             )
@@ -221,12 +232,16 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
             if not isinstance(action, dict):
                 continue
             result = action.get("result") if isinstance(action.get("result"), dict) else {}
-            lines.append(
-                "- "
-                f"{action.get('type', 'action')}: {action.get('reason', '')} "
-                f"started={result.get('started', False)} "
-                f"result={result.get('reason', result.get('pid', ''))}"
-            )
+            if result:
+                lines.append(
+                    "- "
+                    f"{action.get('type', 'action')}: {action.get('reason', '')} "
+                    f"started={result.get('started', False)} "
+                    f"result={result.get('reason', result.get('pid', result.get('unit', '')))}"
+                )
+            else:
+                detail = action.get("url") or action.get("lock") or action.get("number") or ""
+                lines.append(f"- {action.get('type', 'action')}: {action.get('reason', '')} {detail}")
 
     return lines
 
