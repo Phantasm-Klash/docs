@@ -49,6 +49,38 @@ def read_json(path: Path) -> dict[str, object]:
     return value if isinstance(value, dict) else {}
 
 
+def bool_cn(value: object) -> str:
+    if value is True:
+        return "是"
+    if value is False:
+        return "否"
+    return str(value)
+
+
+def scope_risk_description(scope_id: str, scope: dict[str, object]) -> str:
+    lock = scope.get("lock") if isinstance(scope.get("lock"), dict) else {}
+    log = scope.get("log") if isinstance(scope.get("log"), dict) else {}
+    reasons: list[str] = []
+    if lock.get("stale"):
+        reasons.append("lock 过期")
+    if lock.get("dead_unfinished"):
+        reasons.append("死锁/异常退出未完成")
+    if lock.get("alive") and not log.get("useful_hash"):
+        reasons.append("已启动但暂无有效输出")
+    if scope.get("report_expected") and not scope.get("report_updated"):
+        reasons.append("报告未更新")
+    stalled_count = int(scope.get("stalled_count", 0) or 0)
+    if stalled_count >= 2:
+        reasons.append("连续两次无 scoped diff/commit/scope heartbeat/test signal")
+    elif not scope.get("progress"):
+        reasons.append("本轮无 scoped diff/commit/scope heartbeat/test signal")
+    if scope.get("recent_launch_failed"):
+        reasons.append("上次补救无有效输出")
+    if not reasons:
+        return ""
+    return f"{scope_id}: " + "；".join(reasons)
+
+
 def summarize_repo(root: Path, name: str) -> str:
     repo = root / name
     if not repo.exists():
@@ -114,6 +146,7 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
 
     lines = [
         f"Watchdog generated: {summary.get('generated_at', '(unknown)')}",
+        f"Watchdog final resample: {bool_cn(summary.get('resampled_after_actions', False))}",
         (
             "Manager: "
             f"mode={manager.get('mode', 'unknown')} "
@@ -200,10 +233,13 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
 
     if scopes:
         lines.append("")
-        lines.append("Agent 状态:")
+        lines.append("Agent 最终状态:")
         for scope_id, raw_scope in sorted(scopes.items()):
             scope = raw_scope if isinstance(raw_scope, dict) else {}
             action_count = len(scope.get("actions", [])) if isinstance(scope.get("actions"), list) else 0
+            lock = scope.get("lock") if isinstance(scope.get("lock"), dict) else {}
+            unit_info = lock.get("unit_info") if isinstance(lock.get("unit_info"), dict) else {}
+            risk = scope_risk_description(scope_id, scope)
             lines.append(
                 "- "
                 f"{scope_id}: status={scope.get('status', 'unknown')} "
@@ -211,8 +247,14 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
                 f"stalled={scope.get('stalled_count', 'unknown')} "
                 f"deferred={scope.get('deferred', False)} "
                 f"repo={scope.get('repo', 'unknown')} "
+                f"lock_alive={lock.get('alive', 'unknown')} "
+                f"unit={lock.get('unit') or '-'} "
+                f"unit_active={unit_info.get('active', lock.get('unit_active', 'unknown'))} "
+                f"pid_alive={lock.get('stored_pid_alive', 'unknown')} "
                 f"actions={action_count}"
             )
+            if risk:
+                lines.append(f"  风险: {risk}")
 
     change_summary = reports.get("change_summary") if isinstance(reports.get("change_summary"), dict) else {}
     plan_audit = reports.get("plan_audit") if isinstance(reports.get("plan_audit"), dict) else {}

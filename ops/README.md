@@ -6,10 +6,15 @@
 the four development scopes, two continuous review scopes, the five child
 repositories, and systemd mail status. If a scope is missing it starts a
 fallback `codex exec` worker.
-If a scope has no commit, scoped diff, heartbeat, or log progress for two
-consecutive hourly samples, it starts a replacement worker. The watchdog writes
-host-local state under `/root/gotouhou/.agents/` and does not store secrets in
-git.
+If a scope has no commit, scoped diff, heartbeat, test log, useful worker log,
+or managed report progress for two consecutive hourly samples, it is reported as
+a stall risk and may start a replacement worker. After any cleanup/start action,
+the watchdog re-samples systemd units, locks, logs, reports, runtime, and child
+repository state before writing the summary used by mail. Agent active state is
+validated from the transient systemd unit plus the recorded or systemd main PID,
+so a still-running unit is not hidden by an old `alive=false` snapshot. The
+watchdog writes host-local state under `/root/gotouhou/.agents/` and does not
+store secrets in git.
 
 Fallback workers are launched with Codex `/goal` sustained-target prompts. The
 watchdog reads per-agent API keys from the host-local `/root/.codex/keys` file
