@@ -106,6 +106,11 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
     reports = summary.get("reports") if isinstance(summary.get("reports"), dict) else {}
     keyring = summary.get("keyring") if isinstance(summary.get("keyring"), dict) else {}
     key_assignments = summary.get("key_assignments") if isinstance(summary.get("key_assignments"), dict) else {}
+    runtime = summary.get("runtime") if isinstance(summary.get("runtime"), dict) else {}
+    godot = runtime.get("godot_linux") if isinstance(runtime.get("godot_linux"), dict) else {}
+    docker = runtime.get("docker") if isinstance(runtime.get("docker"), dict) else {}
+    pull_requests = summary.get("pull_requests") if isinstance(summary.get("pull_requests"), dict) else {}
+    regression = summary.get("regression") if isinstance(summary.get("regression"), dict) else {}
 
     lines = [
         f"Watchdog generated: {summary.get('generated_at', '(unknown)')}",
@@ -139,6 +144,60 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
             assignment = raw_assignment if isinstance(raw_assignment, dict) else {}
             lines.append(f"- {scope_id}: {assignment.get('alias') or '(missing)'}")
 
+    if runtime:
+        lines.append("")
+        lines.append("运行环境:")
+        lines.append(
+            "- Godot Linux: "
+            f"exists={godot.get('exists', 'unknown')} "
+            f"executable={godot.get('executable', 'unknown')} "
+            f"version={godot.get('version', 'unknown')} "
+            f"path={godot.get('path', '')}"
+        )
+        lines.append(
+            "- Docker: "
+            f"available={docker.get('available', 'unknown')} "
+            f"docker-compose={docker.get('docker_compose_available', 'unknown')} "
+            f"version={docker.get('docker_compose_version', 'unknown')}"
+        )
+        repo_files = docker.get("repo_files") if isinstance(docker.get("repo_files"), dict) else {}
+        if repo_files:
+            lines.append("- Docker files: " + "; ".join(f"{repo}={len(files)}" for repo, files in sorted(repo_files.items())))
+
+    if pull_requests:
+        lines.append("")
+        lines.append("PR 状态:")
+        for repo_name, raw_prs in sorted(pull_requests.items()):
+            prs = raw_prs if isinstance(raw_prs, dict) else {}
+            line = f"- {repo_name}: open={prs.get('open_count', 'unknown')}"
+            if prs.get("error"):
+                line += f" error={prs.get('error')}"
+            lines.append(line)
+            items = prs.get("items") if isinstance(prs.get("items"), list) else []
+            for item in items[:5]:
+                if isinstance(item, dict):
+                    lines.append(
+                        f"  PR #{item.get('number')} {item.get('headRefName')} -> {item.get('baseRefName')} "
+                        f"mergeState={item.get('mergeStateStatus')} {item.get('url')}"
+                    )
+
+    if regression:
+        lines.append("")
+        lines.append("回归检查:")
+        if regression.get("missing"):
+            lines.append(f"- missing: {regression.get('path', '')}")
+        else:
+            lines.append(
+                "- "
+                f"ok={regression.get('ok', 'unknown')} "
+                f"failed_count={regression.get('failed_count', 'unknown')} "
+                f"generated_at={regression.get('generated_at', 'unknown')}"
+            )
+            failed = regression.get("failed") if isinstance(regression.get("failed"), list) else []
+            for item in failed[:8]:
+                if isinstance(item, dict):
+                    lines.append(f"- failed: {item.get('name')} status={item.get('status')} blocked={item.get('blocked', False)}")
+
     if scopes:
         lines.append("")
         lines.append("Agent 状态:")
@@ -150,6 +209,7 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
                 f"{scope_id}: status={scope.get('status', 'unknown')} "
                 f"progress={scope.get('progress', 'unknown')} "
                 f"stalled={scope.get('stalled_count', 'unknown')} "
+                f"deferred={scope.get('deferred', False)} "
                 f"repo={scope.get('repo', 'unknown')} "
                 f"actions={action_count}"
             )
@@ -158,11 +218,11 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
     plan_audit = reports.get("plan_audit") if isinstance(reports.get("plan_audit"), dict) else {}
     if change_summary.get("text"):
         lines.append("")
-        lines.append("中文功能摘要:")
+        lines.append(f"中文功能摘要: updated_at={change_summary.get('updated_at', 'unknown')}")
         lines.append(str(change_summary.get("text", "")).strip())
     if plan_audit.get("text"):
         lines.append("")
-        lines.append("计划方向审计:")
+        lines.append(f"计划方向审计: updated_at={plan_audit.get('updated_at', 'unknown')}")
         lines.append(str(plan_audit.get("text", "")).strip())
 
     if actions:
@@ -172,12 +232,16 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
             if not isinstance(action, dict):
                 continue
             result = action.get("result") if isinstance(action.get("result"), dict) else {}
-            lines.append(
-                "- "
-                f"{action.get('type', 'action')}: {action.get('reason', '')} "
-                f"started={result.get('started', False)} "
-                f"result={result.get('reason', result.get('pid', ''))}"
-            )
+            if result:
+                lines.append(
+                    "- "
+                    f"{action.get('type', 'action')}: {action.get('reason', '')} "
+                    f"started={result.get('started', False)} "
+                    f"result={result.get('reason', result.get('pid', result.get('unit', '')))}"
+                )
+            else:
+                detail = action.get("url") or action.get("lock") or action.get("number") or ""
+                lines.append(f"- {action.get('type', 'action')}: {action.get('reason', '')} {detail}")
 
     return lines
 
