@@ -69,6 +69,12 @@ def scope_risk_description(scope_id: str, scope: dict[str, object]) -> str:
         reasons.append("已启动但暂无有效输出")
     if scope.get("report_expected") and not scope.get("report_updated"):
         reasons.append("报告未更新")
+    if scope.get("version_blocked"):
+        reasons.append("agent 已退出但 scope 路径仍有未提交改动，版本流程未完成")
+    if scope.get("failed_runtime"):
+        reasons.append("fallback 非零退出")
+    if scope.get("idle_until_next_hour"):
+        reasons.append("本小时已完成，等待下一小时继续 /goal")
     stalled_count = int(scope.get("stalled_count", 0) or 0)
     if stalled_count >= 2:
         reasons.append("连续两次无 scoped diff/commit/scope heartbeat/test signal")
@@ -246,6 +252,10 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
                 f"continuous={scope.get('continuous', 'unknown')} "
                 f"started_this_hour={scope.get('started_this_hour', 'unknown')} "
                 f"due_for_continuation={scope.get('due_for_continuation', 'unknown')} "
+                f"runtime_completed={scope.get('completed_runtime', 'unknown')} "
+                f"runtime_failed={scope.get('failed_runtime', 'unknown')} "
+                f"version_blocked={scope.get('version_blocked', 'unknown')} "
+                f"idle_until_next_hour={scope.get('idle_until_next_hour', 'unknown')} "
                 f"progress={scope.get('progress', 'unknown')} "
                 f"stalled={scope.get('stalled_count', 'unknown')} "
                 f"deferred={scope.get('deferred', False)} "

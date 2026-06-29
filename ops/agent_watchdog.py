@@ -535,12 +535,34 @@ def scoped_head_fingerprint(root: Path, scope: dict[str, Any]) -> dict[str, Any]
 
 
 def scoped_commit_progress(previous: dict[str, Any] | None, previous_scope: dict[str, Any], current_head: str, current_fingerprint: str) -> bool:
-    if previous is None:
-        return True
+    if previous is None or not previous_scope:
+        return False
     previous_fingerprint = previous_scope.get("head_fingerprint")
     if previous_fingerprint:
         return current_fingerprint != previous_fingerprint
-    return current_head != previous_scope.get("head")
+    previous_head = previous_scope.get("head")
+    return bool(previous_head and current_head != previous_head)
+
+
+def progress_value_changed(previous_scope: dict[str, Any], key: str, current: Any) -> bool:
+    if not previous_scope or key not in previous_scope:
+        return False
+    previous_value = previous_scope.get(key)
+    if previous_value is None or current is None:
+        return False
+    return current != previous_value
+
+
+def progress_hash_changed(previous_scope: dict[str, Any], key: str, current: str | None) -> bool:
+    return bool(current and progress_value_changed(previous_scope, key, current))
+
+
+def next_stalled_count(previous_count: int, *, progress: bool, same_hour: bool) -> int:
+    if progress:
+        return 0
+    if same_hour:
+        return previous_count
+    return previous_count + 1
 
 
 def collect_pr_list(root: Path, repo_name: str, state: str, now: dt.datetime, limit: int = 20) -> dict[str, Any]:
@@ -630,6 +652,13 @@ def scoped_status(root: Path, scope: dict[str, Any]) -> tuple[str, str]:
     diffstat = run_git(repo, ["diff", "--stat", "--", *paths])
     text = "\n".join([status, diffstat]).strip()
     return text, sha256_text(text)
+
+
+def scoped_dirty_paths(root: Path, scope: dict[str, Any]) -> list[str]:
+    repo = root / str(scope["repo"])
+    paths = [str(path) for path in scope.get("paths", ())]
+    status = run_git(repo, ["status", "--short", "--", *paths])
+    return [line for line in status.splitlines() if line.strip()]
 
 
 def repo_has_foreign_active_work(root: Path, repo_name: str, scope_id: str, repos: dict[str, Any]) -> tuple[bool, str]:
@@ -872,7 +901,7 @@ def pr_approval_checks(root: Path, repo_name: str, pr: dict[str, Any]) -> dict[s
     return {"blockers": blockers, "evidence": evidence}
 
 
-def maybe_approve_pull_requests(root: Path, pull_requests: dict[str, Any], approve: bool) -> list[dict[str, Any]]:
+def maybe_approve_pull_requests(root: Path, pull_requests: dict[str, Any], approve: bool, dry_run: bool) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     if not approve:
         return actions
@@ -893,6 +922,17 @@ def maybe_approve_pull_requests(root: Path, pull_requests: dict[str, Any], appro
                         "number": number,
                         "url": pr.get("url"),
                         "blockers": blockers,
+                        "evidence": check_result.get("evidence"),
+                    }
+                )
+                continue
+            if dry_run:
+                actions.append(
+                    {
+                        "type": "pr-approval-dry-run",
+                        "repo": repo_name,
+                        "number": number,
+                        "url": pr.get("url"),
                         "evidence": check_result.get("evidence"),
                     }
                 )
@@ -980,6 +1020,10 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
             f"{scope.get('progress', '')} | {scope.get('stalled_count', '')} | "
             f"{scope.get('head', '')} | {len(scope.get('actions', [])) if isinstance(scope.get('actions'), list) else 0} |"
         )
+        if scope.get("version_blocked"):
+            lines.append(f"| {scope_id} detail | {scope.get('repo', '')} | version-blocked | | | | | | scoped dirty after exit | | | |")
+        elif scope.get("idle_until_next_hour"):
+            lines.append(f"| {scope_id} detail | {scope.get('repo', '')} | idle-until-next-hour | | | | | | completed this hour | | | |")
 
     lines.extend(
         [
@@ -1336,6 +1380,12 @@ def scope_risk_reason(scope_id: str, scope: dict[str, Any]) -> str:
         reasons.append("agent 已启动但日志仍无有效输出")
     if scope.get("report_expected") and not scope.get("report_updated"):
         reasons.append("受管报告 mtime 未更新")
+    if scope.get("version_blocked"):
+        reasons.append("agent 已退出但 scope 路径仍有未提交改动，版本流程未完成")
+    if scope.get("failed_runtime"):
+        reasons.append("fallback 非零退出")
+    if scope.get("idle_until_next_hour"):
+        reasons.append("本小时已成功退出，等待下一个小时继续 `/goal`")
     stalled_count = int(scope.get("stalled_count", 0) or 0)
     if stalled_count >= 2:
         reasons.append("连续两次没有 scoped diff、commit、scope heartbeat 或测试指纹变化")
@@ -1418,6 +1468,16 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
         names = ", ".join(str(item.get("name")) for item in failed if isinstance(item, dict))
         risk_lines.append(f"- 最新回归检查未通过: {names or 'unknown'}。")
     active_locks = [scope_id for scope_id, raw_scope in scopes.items() if isinstance(raw_scope, dict) and (raw_scope.get("lock") or {}).get("alive")]
+    version_blocked_scopes = [
+        scope_id
+        for scope_id, raw_scope in scopes.items()
+        if isinstance(raw_scope, dict) and raw_scope.get("version_blocked")
+    ]
+    idle_scopes = [
+        scope_id
+        for scope_id, raw_scope in scopes.items()
+        if isinstance(raw_scope, dict) and raw_scope.get("idle_until_next_hour")
+    ]
     dead_locks = [
         scope_id
         for scope_id, raw_scope in scopes.items()
@@ -1425,6 +1485,10 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
     ]
     if active_locks:
         risk_lines.append(f"- 当前仍有 active lock: {', '.join(active_locks)}。")
+    if version_blocked_scopes:
+        risk_lines.append(f"- 以下 agent 已退出但 scope 路径仍有未提交改动，已按版本流程未完成处置: {', '.join(version_blocked_scopes)}。")
+    if idle_scopes:
+        risk_lines.append(f"- 以下持续 `/goal` scope 本小时已成功退出，等待下一小时自动续跑: {', '.join(idle_scopes)}。")
     if dead_locks:
         risk_lines.append(f"- watchdog 清理/发现死锁: {', '.join(dead_locks)}；旧 service 可能曾杀掉后台 agent。")
     for scope_id, raw_scope in sorted(scopes.items()):
@@ -1488,7 +1552,8 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
         f"- docs/ops 当前策略要求 feature branch、阶段性 commit、PR 审批流程，不再默认直接推 main。",
         "- agent 停滞判定已使用 scope 路径 commit 指纹，不再把同仓其他 scope 的 repo HEAD 变化误算为本 scope 进展。",
         "- 四个开发 scope 与两个报告/审计 scope 均按持续 `/goal` scope 管理；每个新小时会补位拉起，若同仓有活动锁或外来分支则暂缓。",
-        "- 历史漏检原因已定位：旧逻辑把同仓 repo HEAD、全局 heartbeat 和过宽的日志输出算作 scope 进展；现在只有 scope 路径提交、scoped diff、scope heartbeat、有效报告/测试/日志变化才算推进。",
+        "- 历史漏检原因已定位：旧逻辑把同仓 repo HEAD、全局 heartbeat、无上一轮基线和过宽的日志输出算作 scope 进展；现在只有 scope 路径提交、scoped diff、scope heartbeat、有效报告/测试/日志变化才算推进。",
+        "- 已退出 fallback 若留下 scoped dirty work，会被标记为版本流程未完成并续跑同 scope，不再误报为 completed。",
         "- watchdog 发现回归失败时会按检查类型启动独立 bugfix agent：SpellKard headless、Gensoulkyo docker-compose、PhK-BattleServer docker-compose、跨仓协议审计分别走独立 fix 分支和 PR。",
         "- fallback runner 已固定 `/root` GitHub CLI 配置、credential helper、socks 代理和 Go cache；worker 本地提交后应直接推分支并开 PR。",
         f"- Godot Linux: `{godot.get('path', DEFAULT_GODOT_LINUX)}`，exists={godot.get('exists')}，executable={godot.get('executable')}，version={godot.get('version', '')}。",
@@ -1505,6 +1570,7 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
             f"- {scope_id}: status={scope.get('status')}，repo={scope.get('repo')}，"
             f"continuous={scope.get('continuous')}，started_hour={scope.get('started_this_hour')}，"
             f"continue_due={scope.get('due_for_continuation')}，progress={scope.get('progress')}，stalled={scope.get('stalled_count')}，"
+            f"version_blocked={scope.get('version_blocked')}，idle={scope.get('idle_until_next_hour')}，"
             f"deferred={scope.get('deferred')}，lock_alive={(scope.get('lock') or {}).get('alive')}。"
         )
 
@@ -1623,7 +1689,9 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
             "- watchdog 已采样 branch/PR、agent、Godot Linux、Docker 和 `docker-compose` 状态，邮件摘要可直接读取本轮最新报告。",
             "- worker prompt 已纳入 feature branch、阶段性 commit、PR、Linux Godot headless、服务端 Docker/`docker-compose` 回归要求。",
             "- watchdog 停滞检测已改为 scope 路径 commit 指纹，避免同仓其他 scope 提交掩盖本 scope 停滞。",
-            "- 停滞判定不再使用全局 manager heartbeat、全局 regression mtime 或同仓其他 scope 的 repo HEAD；started-only 日志和过期 active lock 会触发替代 worker。",
+            "- 停滞判定不再使用全局 manager heartbeat、全局 regression mtime、无上一轮基线或同仓其他 scope 的 repo HEAD；started-only 日志和过期 active lock 会触发替代 worker。",
+            "- 已成功退出但留下 scope dirty work 的 fallback 会标记为 version-blocked，并续跑同 scope 完成阶段性 commit、push 和 PR。",
+            "- 已成功退出且本小时完成的连续 `/goal` scope 会标记为 idle-until-next-hour，邮件必须说明这是等待下一小时续跑，不是常驻运行。",
             "- fallback runner 已固定 HOME/XDG/GH_CONFIG_DIR、GitHub socks 代理和 credential helper 环境，worker 应可直接推分支、开 PR，并在失败时写入 final log。",
             "- PR 审批被定义为受控动作：读取 PR diff 和 docs/dev 路线、运行对应检查、确认无阻塞后才 `gh pr review --approve`；不自动合并。",
             "- regression 失败会按检查类型分发独立 bugfix agent/branch/PR，且同仓有 active worker 或 bugfix lock 时自动暂缓，避免互相覆盖。",
@@ -1659,7 +1727,7 @@ def managed_change_describer_prompt() -> str:
 
 摘要必须包含：更新前服务器状态、更新后服务器状态、本小时完成内容、Agent 状态、PR 状态、阻塞/风险、下一小时建议。文字用项目负责人能直接看懂的中文短句，不粘贴冗长 git 原文、diff、日志和命令输出。
 
-必须写入风险：报告未更新、agent lock 残留或 started-only 日志、active 但无有效输出、dead lock 被清理、补救后未重采样、已退出 fallback 仍显示 started/running、非零退出未标 failed、未走 feature branch + PR、main 近一小时提交无法匹配 merged PR、PR 采样失败、watchdog 查出的代码问题未开独立 bugfix PR、bugfix PR 被分支保护阻塞、Godot Linux headless 未跑、服务端 Docker/`docker-compose` 回归缺失、watchdog/邮件异常、key alias 缺失、工作区已有未提交改动但被误报为完成。
+必须写入风险：报告未更新、agent lock 残留或 started-only 日志、active 但无有效输出、dead lock 被清理、补救后未重采样、已退出 fallback 仍显示 started/running、已退出 fallback 留下 scope dirty work 却被误报 completed、同小时已完成的持续 scope 未标记 idle-until-next-hour、非零退出未标 failed、未走 feature branch + PR、main 近一小时提交无法匹配 merged PR、PR 采样失败、watchdog 查出的代码问题未开独立 bugfix PR、bugfix PR 被分支保护阻塞、Godot Linux headless 未跑、服务端 Docker/`docker-compose` 回归缺失、watchdog/邮件异常、key alias 缺失、工作区已有未提交改动但被误报为完成。
 
 不得把全局 manager heartbeat、全局 regression 文件 mtime、同仓其他 scope 的 repo HEAD 变化当成某个 scope 的推进。服务器无显卡导致的纯 Godot 渲染器失败可以写为 ignored/blocked，不算功能失败；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败仍必须写为真实阻塞。
 
@@ -1674,7 +1742,7 @@ def managed_plan_auditor_prompt() -> str:
 
 每轮读取 `/root/gotouhou/docs/dev/progress.md` 与 `/root/gotouhou/docs/dev/gotouhou/**/*.md`，再检查五个子仓库状态、branch/PR/最近 merged PR 形态、最近提交、systemd/lock/log 真实进程状态、最新 watchdog summary、Godot Linux headless 能力、Docker/`docker-compose` 回归能力和 open PR。判断新增功能与开发流程是否符合 Phase 2/3/6/8、网络安全、Nakama、大厅/房间、C++ BattleServer、Godot UI/弹幕路线。
 
-必须审计：是否缺阶段性 commit、是否直接推 main、main 近一小时提交是否能匹配 recently merged PR、是否缺 PR、PR 是否读完代码和路线后再审批、watchdog 查出的代码问题是否开独立 bugfix 分支/PR 并测试合回、SpellKard 是否用 Linux Godot headless 验证、服务端是否使用 Docker/`docker-compose` 或记录缺口、邮件内容是否及时反映 agent 真实进程状态和阻塞风险。补救动作后没有重采样、started-only 日志、active 但无有效输出、dead lock、已退出 fallback 仍显示 started、非零退出未标 failed、报告未更新、用同仓其他 scope 的 repo HEAD、全局 manager heartbeat 或全局 regression mtime 掩盖 scope 停滞，都算 agent 未正常执行，不得当成正常运行。服务器无显卡导致的纯 Godot 渲染器失败可以忽略为环境 blocked；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败不能忽略。
+必须审计：是否缺阶段性 commit、是否直接推 main、main 近一小时提交是否能匹配 recently merged PR、是否缺 PR、PR 是否读完代码和路线后再审批、watchdog 查出的代码问题是否开独立 bugfix 分支/PR 并测试合回、SpellKard 是否用 Linux Godot headless 验证、服务端是否使用 Docker/`docker-compose` 或记录缺口、邮件内容是否及时反映 agent 真实进程状态和阻塞风险。补救动作后没有重采样、started-only 日志、active 但无有效输出、dead lock、已退出 fallback 仍显示 started、已退出 fallback 留下 scope dirty work 却被误报 completed、同小时完成的持续 scope 未标 idle-until-next-hour、非零退出未标 failed、报告未更新、用无上一轮基线、同仓其他 scope 的 repo HEAD、全局 manager heartbeat 或全局 regression mtime 掩盖 scope 停滞，都算 agent 未正常执行，不得当成正常运行。服务器无显卡导致的纯 Godot 渲染器失败可以忽略为环境 blocked；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败不能忽略。
 
 输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`，同时更新本提示词文件。只允许写 `.agents` 下指定文件，不修改 git 仓库，不提交，不推送。不得泄露凭据。结论必须明确“符合/偏离/建议调整”，并给出可直接交给后续 worker 的中文提示词。写报告和提示词必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
 """
@@ -2241,6 +2309,7 @@ def evaluate_scope(
     dry_run: bool,
 ) -> dict[str, Any]:
     scoped_text, diff_hash = scoped_status(root, scope)
+    scoped_dirty = scoped_dirty_paths(root, scope)
     repo = str(scope["repo"])
     head_state = scoped_head_fingerprint(root, scope)
     current_head = str(head_state.get("head", ""))
@@ -2289,35 +2358,38 @@ def evaluate_scope(
 
     observed_log = lock.get("log") if lock.get("alive") and isinstance(lock.get("log"), dict) and lock["log"].get("exists") else log
     previous_log_hash = previous_scope.get("log_useful_hash")
-    previous_fingerprint = previous_scope.get("head_fingerprint") or previous_scope.get("head")
     commit_progress = scoped_commit_progress(previous, previous_scope, current_head, current_head_fingerprint)
-    diff_progress = bool(previous is None or diff_hash != previous_scope.get("diff_hash"))
-    log_progress = bool(observed_log.get("useful_hash") and observed_log.get("useful_hash") != previous_log_hash)
-    heartbeat_progress = bool(heartbeat_mtime is not None and heartbeat_mtime != previous_scope.get("heartbeat_mtime"))
-    test_log_progress = bool(test_signal and test_signal != previous_scope.get("test_signal"))
+    diff_progress = progress_value_changed(previous_scope, "diff_hash", diff_hash)
+    log_progress = progress_hash_changed(previous_scope, "log_useful_hash", observed_log.get("useful_hash"))
+    heartbeat_progress = progress_value_changed(previous_scope, "heartbeat_mtime", heartbeat_mtime)
+    test_log_progress = progress_hash_changed(previous_scope, "test_signal", test_signal)
     progress = bool(commit_progress or diff_progress or log_progress or heartbeat_progress or test_log_progress)
     scope_report_path = report_path(root, scope_id)
     report_expected = scope_report_path is not None
     report_updated = False
     if scope_report_path and scope_report_path.exists():
         report_mtime = scope_report_path.stat().st_mtime
-        if report_mtime != previous_scope.get("report_mtime"):
+        if progress_value_changed(previous_scope, "report_mtime", report_mtime):
             progress = True
             report_updated = True
     else:
         report_mtime = None
-    recent_launch_failed = bool(lock.get("dead_unfinished") or log_finished_with_failure(runtime_log))
+    status_before_actions = str(roster_entry.get("status", ""))
+    completed_runtime = bool(not lock.get("alive") and log_finished_successfully(runtime_log))
+    failed_runtime = bool(not lock.get("alive") and log_finished_with_failure(runtime_log))
+    version_blocked = bool(scoped_dirty and completed_runtime)
+    recent_launch_failed = bool(lock.get("dead_unfinished") or failed_runtime)
     fallback_log_path = roster_entry.get("fallback_log_path") if isinstance(roster_entry.get("fallback_log_path"), str) else ""
     if fallback_log_path and latest_log and Path(fallback_log_path) == latest_log and not lock.get("alive") and not log.get("exited"):
         recent_launch_failed = True
-    if recent_launch_failed:
+    if recent_launch_failed or version_blocked:
         progress = False
 
     previous_stalled_count = max(
         int(previous_scope.get("stalled_count", 0) or 0),
         int(risk_previous_scope.get("stalled_count", 0) or 0),
     )
-    stalled_count = previous_stalled_count if progress and same_hour else (0 if progress else previous_stalled_count + 1)
+    stalled_count = next_stalled_count(previous_stalled_count, progress=progress, same_hour=same_hour)
 
     active_stall_reason = active_lock_stall_reason(lock, observed_log, progress)
     if active_stall_reason:
@@ -2331,6 +2403,9 @@ def evaluate_scope(
     last_started = parse_iso(roster_entry.get("last_started_at") if isinstance(roster_entry.get("last_started_at"), str) else None)
     started_this_hour = bool(last_started and hour_bucket(last_started) == hour_bucket(now))
     due_for_continuation = bool(continuous and not lock.get("alive") and not started_this_hour)
+    if version_blocked:
+        roster_entry["status"] = "blocked"
+        roster_entry["last_failure_reason"] = "fallback exited with scoped uncommitted work; version flow incomplete"
     if deferred:
         should_start = False
     elif active_stalled:
@@ -2349,12 +2424,17 @@ def evaluate_scope(
     elif recent_launch_failed:
         should_start = True
         action_reason = "previous agent launch died before useful output"
+    elif version_blocked:
+        should_start = True
+        action_reason = "previous agent exited with scoped uncommitted work; continue branch/commit/PR flow"
     elif continuous:
         last_started = parse_iso(roster_entry.get("last_started_at") if isinstance(roster_entry.get("last_started_at"), str) else None)
         started_this_hour = bool(last_started and hour_bucket(last_started) == hour_bucket(now))
         if not started_this_hour:
             should_start = True
             action_reason = "scheduled hourly continuous /goal scope"
+        elif completed_runtime and not scoped_dirty:
+            action_reason = "continuous /goal scope completed this hour and is idle until next hourly launch"
     elif completed and not started_this_hour:
         should_start = True
         action_reason = "completed scope needs sustained /goal continuation"
@@ -2398,7 +2478,7 @@ def evaluate_scope(
         "head_fingerprint": current_head_fingerprint,
         "head_source": head_state.get("source"),
         "diff_hash": diff_hash,
-        "scoped_dirty": scoped_text.splitlines()[:20],
+        "scoped_dirty": scoped_dirty[:20],
         "log_mtime": log_mtime,
         "log_useful_hash": observed_log.get("useful_hash"),
         "log": observed_log,
@@ -2432,6 +2512,11 @@ def evaluate_scope(
             "active_stall_reason": active_stall_reason,
         },
         "recent_launch_failed": recent_launch_failed,
+        "version_blocked": version_blocked,
+        "completed_runtime": completed_runtime,
+        "failed_runtime": failed_runtime,
+        "idle_until_next_hour": bool(continuous and completed_runtime and not scoped_dirty and not lock.get("alive") and started_this_hour),
+        "status_before_actions": status_before_actions,
         "deferred": deferred,
         "deferred_reason": deferred_reason,
         "stalled_count": stalled_count,
@@ -2459,6 +2544,7 @@ def refresh_scope_runtime(
 ) -> dict[str, Any]:
     repo = str(scope["repo"])
     scoped_text, diff_hash = scoped_status(root, scope)
+    scoped_dirty = scoped_dirty_paths(root, scope)
     head_state = scoped_head_fingerprint(root, scope)
     current_head = str(head_state.get("head", ""))
     current_head_fingerprint = str(head_state.get("fingerprint", ""))
@@ -2477,19 +2563,18 @@ def refresh_scope_runtime(
     lock = lock_status(lock_path(root, scope_id), now)
     observed_log = lock.get("log") if lock.get("alive") and isinstance(lock.get("log"), dict) and lock["log"].get("exists") else log
 
-    previous_fingerprint = previous_scope.get("head_fingerprint") or previous_scope.get("head")
     commit_progress = scoped_commit_progress(previous, previous_scope, current_head, current_head_fingerprint)
-    diff_progress = bool(previous is None or diff_hash != previous_scope.get("diff_hash"))
-    log_progress = bool(observed_log.get("useful_hash") and observed_log.get("useful_hash") != previous_log_hash)
-    heartbeat_progress = bool(heartbeat_mtime is not None and heartbeat_mtime != previous_scope.get("heartbeat_mtime"))
-    test_log_progress = bool(test_signal and test_signal != previous_scope.get("test_signal"))
+    diff_progress = progress_value_changed(previous_scope, "diff_hash", diff_hash)
+    log_progress = progress_hash_changed(previous_scope, "log_useful_hash", observed_log.get("useful_hash"))
+    heartbeat_progress = progress_value_changed(previous_scope, "heartbeat_mtime", heartbeat_mtime)
+    test_log_progress = progress_hash_changed(previous_scope, "test_signal", test_signal)
     progress = bool(commit_progress or diff_progress or log_progress or heartbeat_progress or test_log_progress)
     scope_report_path = report_path(root, scope_id)
     report_expected = scope_report_path is not None
     report_updated = False
     if scope_report_path and scope_report_path.exists():
         report_mtime = scope_report_path.stat().st_mtime
-        if report_mtime != previous_scope.get("report_mtime"):
+        if progress_value_changed(previous_scope, "report_mtime", report_mtime):
             progress = True
             report_updated = True
     else:
@@ -2500,15 +2585,22 @@ def refresh_scope_runtime(
         int(risk_previous_scope.get("stalled_count", 0) or 0),
         int(scope_state.get("stalled_count", 0) or 0),
     )
-    stalled_count = previous_stalled_count if progress and same_hour else (0 if progress else previous_stalled_count + 1)
+    completed_runtime = bool(not lock.get("alive") and log_finished_successfully(runtime_log))
+    failed_runtime = bool(not lock.get("alive") and log_finished_with_failure(runtime_log))
+    version_blocked = bool(scoped_dirty and completed_runtime)
+    if failed_runtime or version_blocked:
+        progress = False
+    stalled_count = next_stalled_count(previous_stalled_count, progress=progress, same_hour=same_hour)
 
-    recent_launch_failed = bool(lock.get("dead_unfinished") or log_finished_with_failure(runtime_log))
+    recent_launch_failed = bool(lock.get("dead_unfinished") or failed_runtime)
     active_stall_reason = active_lock_stall_reason(lock, observed_log, progress)
     if active_stall_reason:
         recent_launch_failed = True
 
     status = scope_state.get("status", "unknown")
-    if not lock.get("alive") and runtime_log.get("exited") and status in {"started", "running", "active"}:
+    if version_blocked:
+        status = "blocked"
+    elif not lock.get("alive") and runtime_log.get("exited") and status in {"started", "running", "active"}:
         status = "completed" if runtime_log.get("exit_status") == 0 else "failed"
     last_started = parse_iso(scope_state.get("last_started_at") if isinstance(scope_state.get("last_started_at"), str) else None)
     started_this_hour = bool(last_started and hour_bucket(last_started) == hour_bucket(now))
@@ -2523,7 +2615,7 @@ def refresh_scope_runtime(
             "head_fingerprint": current_head_fingerprint,
             "head_source": head_state.get("source"),
             "diff_hash": diff_hash,
-            "scoped_dirty": scoped_text.splitlines()[:20],
+            "scoped_dirty": scoped_dirty[:20],
             "log_mtime": log_mtime,
             "log_useful_hash": observed_log.get("useful_hash"),
             "log": observed_log,
@@ -2554,12 +2646,16 @@ def refresh_scope_runtime(
                 "active_stall_reason": active_stall_reason,
             },
             "recent_launch_failed": recent_launch_failed,
+            "version_blocked": version_blocked,
+            "completed_runtime": completed_runtime,
+            "failed_runtime": failed_runtime,
             "stalled_count": stalled_count,
             "lock": lock,
             "status": status,
             "continuous": continuous,
             "started_this_hour": started_this_hour,
             "due_for_continuation": bool(continuous and not lock.get("alive") and not started_this_hour),
+            "idle_until_next_hour": bool(continuous and completed_runtime and not scoped_dirty and not lock.get("alive") and started_this_hour),
             "resampled_at": iso(now),
         }
     )
@@ -2830,7 +2926,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     )
     actions.extend(bugfix_actions)
 
-    actions.extend(maybe_approve_pull_requests(root, pull_requests, args.approve_prs))
+    actions.extend(maybe_approve_pull_requests(root, pull_requests, args.approve_prs, args.dry_run))
     actions.extend(stale_artifact_actions(root, now))
     initial_scopes = scopes
     initial_repos = repos
