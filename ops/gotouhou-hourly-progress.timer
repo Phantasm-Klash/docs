@@ -1,8 +1,8 @@
 [Unit]
-Description=Run gotouhou hourly development progress email
+Description=Run gotouhou three-hour development progress email
 
 [Timer]
-OnCalendar=hourly
+OnCalendar=*-*-* 00/3:00:00
 Persistent=true
 Unit=gotouhou-hourly-progress.service
 

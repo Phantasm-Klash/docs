@@ -1,14 +1,16 @@
 # gotouhou Ops Helpers
 
-## Hourly progress mail and watchdog
+## Three-hour progress mail and watchdog
 
-`agent_watchdog.py` runs before the hourly mailer. It samples the manager,
+`agent_watchdog.py` runs before the periodic mailer. It samples the manager,
 the four development scopes, two continuous review scopes, the five child
 repositories, and systemd mail status. If a scope is missing it starts a
 fallback `codex exec` worker.
 If a scope has no commit, scoped diff, heartbeat, test log, useful worker log,
-or managed report progress for two consecutive hourly samples, it is reported as
-a stall risk and may start a replacement worker. After any cleanup/start action,
+or managed report progress for two consecutive three-hour samples, it is reported
+as a stall risk. A live `/goal` agent is not interrupted only because the report
+interval arrived; the watchdog records the risk and waits for the next sample.
+After any cleanup/start action,
 the watchdog re-samples systemd units, locks, logs, reports, runtime, and child
 repository state before writing the summary used by mail. Agent active state is
 validated from the transient systemd unit plus the recorded or systemd main PID,
@@ -27,16 +29,17 @@ fallbacks are:
 - `gensoulkyo-lobby`: `gensoulkyo`;
 - `phk-battle-server`, `change-describer`, `plan-auditor`, `manager`: `other`.
 
-Keep `/root/.codex/keys` mode `0600`; the hourly email reports only aliases and
+Keep `/root/.codex/keys` mode `0600`; the progress email reports only aliases and
 permission warnings.
 
-Development workers use feature branches and pull requests by default:
+Development workers prioritize finishing the overall project according to
+`docs/dev/progress.md`. Pull requests are used when they help parallel review or
+risk control, not for every commit:
 
-- create a scoped branch from latest `origin/main`, for example
-  `agent/<scope>/<YYYYMMDD-HHMM>`;
-- commit each verified stage separately;
-- push the branch and open a PR with summary, tests, risks, protocol/network/security impact, and docs/dev direction notes;
-- avoid direct `main` pushes unless the manager explicitly declares an emergency hotfix.
+- simple, single-repo, linear changes may be committed on the current target branch when local policy allows;
+- complex branches, multi-path validation, cross-repo protocol/network/security work, regression fixes, and parallel agent work should use `agent/<scope>/<YYYYMMDD-HHMM>` or `fix/<area>` branches plus PRs;
+- every verified stage should still be committed separately with tests and remaining risk noted;
+- PRs should include summary, tests, risks, protocol/network/security impact, and docs/dev direction notes.
 
 The watchdog samples open PRs across the five repositories. When explicitly
 enabled with `GOTOUHOU_WATCHDOG_APPROVE_PRS=1` or `--approve-prs`, it may read
@@ -54,7 +57,9 @@ or bullet contract failures are real regressions and must not be ignored.
 
 `hourly_progress_mail.py` sends a concise watchdog-aware summary to
 `wjcwqc@qq.com` through `smtp.ym.163.com:25`. It reads SMTP credentials from
-environment variables and does not print or store the password.
+environment variables and does not print or store the password. The summary is
+intentionally short: project completion percent, current phase, regression
+status, active/blocked agents, repository status, and next priorities.
 
 Dry run:
 
@@ -98,7 +103,7 @@ on the configured port.
 Operational status files:
 
 - `/root/gotouhou/.agents/agent-roster.json`: scope roster and fallback starts;
-- `/root/gotouhou/.agents/hourly-snapshots/*.json`: hourly samples;
+- `/root/gotouhou/.agents/hourly-snapshots/*.json`: periodic samples;
 - `/root/gotouhou/.agents/last-watchdog-summary.json`: latest mail summary input;
 - `/root/gotouhou/.agents/watchdog-last-error.log`: last watchdog stderr when the runner had to send a failure mail;
 - `/root/gotouhou/.agents/checks/latest-regression.json`: latest Godot, protocol, and Docker/docker-compose regression result;

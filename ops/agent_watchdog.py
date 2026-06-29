@@ -2,7 +2,7 @@
 """Watch gotouhou manager/agent progress and start fallback agents when needed.
 
 The watchdog is host-local operational glue. It records state under
-`/root/gotouhou/.agents`, keeps the hourly progress email short and actionable,
+`/root/gotouhou/.agents`, keeps the periodic progress email short and actionable,
 and uses `codex exec` as a fallback when the in-app manager is not making
 progress.
 """
@@ -29,6 +29,8 @@ DEFAULT_GH_PROXY = "socks5://10.10.10.108:10808"
 GOAL_MODE = "codex-/goal-active"
 GITHUB_ORG = "Phantasm-Klash"
 UTC = dt.timezone.utc
+REPORT_INTERVAL_HOURS = 3
+PROJECT_COMPLETION_PERCENT = 38
 ACTIVE_STARTED_ONLY_STALL_SECONDS = 10 * 60
 ACTIVE_NO_PROGRESS_STALL_SECONDS = 20 * 60
 BUGFIX_SCOPE_PREFIX = "bugfix-"
@@ -89,10 +91,11 @@ DEVELOPMENT_SCOPE_DIRECTIVES: dict[str, str] = {
 }
 
 GIT_FLOW_PROMPT = """版本控制和 PR 流程：
-- 不直接在 `main` 开发。先 `git fetch --prune origin`，从最新 `origin/main` 创建 scope 分支，例如 `agent/<scope>/<YYYYMMDD-HHMM>`。
-- 阶段性提交：每个可验证阶段都要 commit，提交信息写清功能范围、验证方式和剩余风险。
-- 推送分支并创建 PR；PR 正文必须包含变更摘要、测试结果、阻塞风险、是否涉及协议/网络/安全、是否需要 docs/dev 方向调整。
-- 除非 manager 明确授权合并，否则不要直接推 `main`。如果仓库规则允许绕过，也优先保留 PR 和分支历史。
+- 以完成整体项目为第一优先级，先读 `/root/gotouhou/docs/dev/progress.md` 和相关开发文档，再决定本轮任务。
+- 小而直接、单仓、可本地验证的线性改动可以在当前目标分支上阶段性提交；提交信息写清功能范围、验证方式和剩余风险。
+- 需要支线开发、多路探索/验证、跨仓协议/网络/安全改动、回归修复、多人并行或分支保护协作时，先 `git fetch --prune origin`，从最新 `origin/main` 创建 `agent/<scope>/<YYYYMMDD-HHMM>` 或 `fix/<area>` 分支并开 PR。
+- PR 正文必须包含变更摘要、测试结果、阻塞风险、是否涉及协议/网络/安全、是否需要 docs/dev 方向调整。
+- 不把“所有提交必须 PR”作为硬规则；PR 是复杂开发和并行验证的工具，不是阻碍整体项目完成的默认动作。
 - 提交或推送前使用 `/root/gotouhou/.agents/locks/git-<repo>.lock`，避免同仓并发冲突。
 - watchdog 查出的代码回归必须开独立 `fix/<area>` 分支和 PR，测试通过后请求合并；若分支保护阻止合并，写入状态和邮件，不得假报已合并。
 - PR 审批前必须读 PR diff、相关 docs/dev 路线和测试结果；审批不等于自动合并。
@@ -211,7 +214,10 @@ def utcnow() -> dt.datetime:
 
 
 def hour_bucket(ts: dt.datetime) -> str:
-    return ts.astimezone(UTC).strftime("%Y%m%dT%H")
+    current = ts.astimezone(UTC)
+    bucket_hour = (current.hour // REPORT_INTERVAL_HOURS) * REPORT_INTERVAL_HOURS
+    bucket = current.replace(hour=bucket_hour, minute=0, second=0, microsecond=0)
+    return bucket.strftime("%Y%m%dT%H")
 
 
 def iso(ts: dt.datetime) -> str:
@@ -490,7 +496,7 @@ def collect_repo(root: Path, repo_name: str, now: dt.datetime) -> dict[str, Any]
     branch = run_git(repo, ["branch", "--show-current"]) or "(detached or unknown)"
     status = run_git(repo, ["status", "--short", "--branch"])
     head = run_git(repo, ["rev-parse", "--short", "HEAD"]) or "(no head)"
-    commits = run_git(repo, ["log", "--since=1 hour ago", "--oneline", "--decorate", "--max-count=20"])
+    commits = run_git(repo, ["log", f"--since={REPORT_INTERVAL_HOURS} hours ago", "--oneline", "--decorate", "--max-count=20"])
     dirty_lines = [line for line in status.splitlines() if line and not line.startswith("## ")]
     return {
         "repo": repo_name,
@@ -997,13 +1003,13 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
         "Git topology: root .git is invalid/empty; child repositories are the commit roots.",
         "Encoding policy: UTF-8, Linux LF.",
         "Key policy: agents receive per-scope keys from the configured local keyring; status files record aliases only.",
-        "Version policy: development work uses feature branches, staged commits, pull requests, and protected-main reviews by default.",
+        "Version policy: simple linear changes may commit directly to the current target branch; branch/PR is reserved for complex, risky, parallel, or multi-repo work.",
         f"Godot Linux: {godot.get('path', DEFAULT_GODOT_LINUX)} exists={godot.get('exists')} executable={godot.get('executable')} version={godot.get('version', '')}",
         f"Docker: available={docker.get('available')} docker-compose={docker.get('docker_compose_available')} version={docker.get('docker_compose_version', '')}",
         "",
         "## Managed goal scopes",
         "",
-        "| Scope | Repo | Status | Key alias | continuous | started_this_hour | due_for_continuation | Deferred | Progress | Stalled | Head | Actions |",
+        "| Scope | Repo | Status | Key alias | continuous | started_this_interval | due_for_continuation | Deferred | Progress | Stalled | Head | Actions |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for scope_id, raw_scope in sorted(scopes.items()):
@@ -1023,7 +1029,7 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
         if scope.get("version_blocked"):
             lines.append(f"| {scope_id} detail | {scope.get('repo', '')} | version-blocked | | | | | | scoped dirty after exit | | | |")
         elif scope.get("idle_until_next_hour"):
-            lines.append(f"| {scope_id} detail | {scope.get('repo', '')} | idle-until-next-hour | | | | | | completed this hour | | | |")
+            lines.append(f"| {scope_id} detail | {scope.get('repo', '')} | idle-until-next-hour | | | | | | completed this 3-hour interval | | | |")
 
     lines.extend(
         [
@@ -1040,7 +1046,7 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
         lines.append(
             "| "
             f"{repo_name} | {repo.get('head', '')} | {repo.get('dirty_count', '')} | "
-            f"{len(commits)} in last hour |"
+            f"{len(commits)} in last {REPORT_INTERVAL_HOURS} hours |"
         )
 
     lines.extend(
@@ -1075,13 +1081,14 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
             "",
             "## Continuous policies",
             "",
-            "- Hourly progress mail runs `agent_watchdog.py` before `hourly_progress_mail.py --brief`.",
-            "- The four development scopes plus the two reporting scopes are continuous `/goal` scopes; once the hourly bucket changes, completed scopes are relaunched unless an active same-repo lock or foreign branch would make that unsafe.",
-            "- Missing scopes, stale manager heartbeat, failed launches, and due continuous scopes start a fallback `codex exec` worker.",
+            f"- Progress mail runs every {REPORT_INTERVAL_HOURS} hours and runs `agent_watchdog.py` before `hourly_progress_mail.py --brief`.",
+            f"- The four development scopes plus the two reporting scopes are continuous `/goal` scopes; once the {REPORT_INTERVAL_HOURS}-hour bucket changes, completed scopes may be relaunched unless an active same-repo lock or foreign branch would make that unsafe.",
+            "- Running agents are not interrupted by the periodic watchdog; active stalls are reported as risks and left to continue unless the process has already exited.",
+            "- Missing scopes, stale manager heartbeat, failed launches, and due continuous scopes start a fallback `codex exec` worker only when no active lock is alive.",
             "- Fallback prompts are written as Codex `/goal` sustained-target instructions.",
             "- Per-agent keys are injected through child process environment only; raw key values are never written to JSON, logs, mail, or git.",
             "- Scope stagnation uses the conservative two-sample rule.",
-            "- Watchdog samples open PRs. With explicit `--approve-prs`, it reads code and docs/dev direction, runs gates, and approves only non-draft main-target PRs without blockers.",
+            "- Watchdog samples open PRs. With explicit `--approve-prs`, it reads code and docs/dev direction, runs gates, and approves only non-draft main-target PRs without blockers; PR is not required for every small commit.",
             "- Network/protocol changes remain gated by `/root/gotouhou/docs/ops/protocol_audit_check.py`.",
         ]
     )
@@ -1343,7 +1350,7 @@ def collect_reports(root: Path) -> dict[str, Any]:
             reports[key] = {
                 "path": str(path),
                 "updated_at": iso(dt.datetime.fromtimestamp(path.stat().st_mtime, UTC)),
-                "text": text[:6000],
+                "text": text[:1500],
             }
         else:
             reports[key] = {"path": str(path), "missing": True, "text": ""}
@@ -1364,8 +1371,18 @@ def repo_status_sentence(repo_name: str, repo: dict[str, Any]) -> str:
     dirty = int(repo.get("dirty_count", 0) or 0)
     commits = repo.get("commits_last_hour") if isinstance(repo.get("commits_last_hour"), list) else []
     dirty_text = "工作区干净" if dirty == 0 else f"{dirty} 个未提交项"
-    commit_text = "近一小时无新提交" if not commits else f"近一小时 {len(commits)} 个提交"
+    commit_text = f"近{REPORT_INTERVAL_HOURS}小时无新提交" if not commits else f"近{REPORT_INTERVAL_HOURS}小时 {len(commits)} 个提交"
     return f"- {repo_name}: {repo.get('branch', 'unknown')} {repo.get('head', '')}，{dirty_text}，{commit_text}。"
+
+
+def project_progress_lines() -> list[str]:
+    return [
+        f"- 整体完成度：约 {PROJECT_COMPLETION_PERCENT}%。",
+        "- 当前主线：Phase 3，服务器权威在线 MVP 与 Go/Nakama 业务服、C++ BattleServer 分工收敛。",
+        "- 已基本完成：规划文档/仓库拆分、SpellKard 本地 STG/卡牌/回放/UI 模型、Gensoulkyo HTTP 权威 MVP、协议 manifest 桥接、C++ 战斗服骨架。",
+        "- 正在推进：v0.1 协议冻结、Nakama/PostgreSQL 持久化、C++ 60Hz 权威模拟与真实传输/加密替换、Godot 最终 UI 与 headless CI。",
+        "- 主要未完成：完整 protobuf 绑定、真实 Ed25519/X25519/KCP/AEAD、生产持久化、WSS/在线 UX、CI/发布包、Steam 闭源层。",
+    ]
 
 
 def scope_risk_reason(scope_id: str, scope: dict[str, Any]) -> str:
@@ -1385,7 +1402,7 @@ def scope_risk_reason(scope_id: str, scope: dict[str, Any]) -> str:
     if scope.get("failed_runtime"):
         reasons.append("fallback 非零退出")
     if scope.get("idle_until_next_hour"):
-        reasons.append("本小时已成功退出，等待下一个小时继续 `/goal`")
+        reasons.append(f"当前 {REPORT_INTERVAL_HOURS} 小时窗口已成功退出，等待下一个窗口继续 `/goal`")
     stalled_count = int(scope.get("stalled_count", 0) or 0)
     if stalled_count >= 2:
         reasons.append("连续两次没有 scoped diff、commit、scope heartbeat 或测试指纹变化")
@@ -1488,7 +1505,7 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
     if version_blocked_scopes:
         risk_lines.append(f"- 以下 agent 已退出但 scope 路径仍有未提交改动，已按版本流程未完成处置: {', '.join(version_blocked_scopes)}。")
     if idle_scopes:
-        risk_lines.append(f"- 以下持续 `/goal` scope 本小时已成功退出，等待下一小时自动续跑: {', '.join(idle_scopes)}。")
+        risk_lines.append(f"- 以下持续 `/goal` scope 当前 {REPORT_INTERVAL_HOURS} 小时窗口已成功退出，等待下个窗口自动续跑: {', '.join(idle_scopes)}。")
     if dead_locks:
         risk_lines.append(f"- watchdog 清理/发现死锁: {', '.join(dead_locks)}；旧 service 可能曾杀掉后台 agent。")
     for scope_id, raw_scope in sorted(scopes.items()):
@@ -1518,7 +1535,7 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
     if pr_sample_failures:
         risk_lines.append(f"- GitHub PR 采样失败: {', '.join(pr_sample_failures)}；不得把采样失败当成无 PR。")
     elif open_pr_count == 0 and not merged_pr_lines:
-        risk_lines.append("- 当前五个仓库没有打开的 PR，且未采样到最近 merged PR；后续开发应走 feature branch + PR，不再直接推 main。")
+        risk_lines.append("- 当前五个仓库没有打开的 PR，且未采样到最近 merged PR；复杂支线、多路验证、跨仓、协议/网络/安全、回归修复或并行开发才需要分支/PR。")
     bugfix_actions = [action for action in actions if isinstance(action, dict) and str(action.get("type", "")).startswith("bugfix")]
     for action in bugfix_actions:
         if action.get("type") == "bugfix-pr-open":
@@ -1537,6 +1554,51 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
     if not risk_lines:
         risk_lines.append("- 未发现新的阻塞风险。")
 
+    active_scopes = [
+        scope_id
+        for scope_id, raw_scope in scopes.items()
+        if isinstance(raw_scope, dict) and (raw_scope.get("lock") or {}).get("alive")
+    ]
+    failed_scopes = [
+        scope_id
+        for scope_id, raw_scope in scopes.items()
+        if isinstance(raw_scope, dict) and (raw_scope.get("failed_runtime") or raw_scope.get("recent_launch_failed"))
+    ]
+    blocked_scopes = [
+        scope_id
+        for scope_id, raw_scope in scopes.items()
+        if isinstance(raw_scope, dict) and raw_scope.get("version_blocked")
+    ]
+    concise_lines = [
+        "## 项目进度",
+        "",
+        *project_progress_lines(),
+        "",
+        "## 服务器状态",
+        "",
+        f"- 采样时间：{summary.get('generated_at', '')}。",
+        f"- 自动汇报节奏：每 {REPORT_INTERVAL_HOURS} 小时一次；正在运行的 `/goal` agent 只观察不打断。",
+        f"- 回归检查：ok={regression.get('ok', 'unknown')}，failed={regression.get('failed_count', 'unknown')}。",
+        f"- Open PR：{'unknown' if pr_sample_failures else open_pr_count}；本轮启动 agent：{summary.get('started_count', 0)}。",
+        f"- Active agent：{', '.join(sorted(active_scopes)) if active_scopes else '无'}。",
+        f"- Failed/blocked：{', '.join(sorted(set(failed_scopes + blocked_scopes))) if failed_scopes or blocked_scopes else '无'}。",
+        "",
+        "## 仓库概况",
+        "",
+        *(repo_status_sentence(name, repo if isinstance(repo, dict) else {}) for name, repo in sorted(repos.items())),
+        "",
+        "## 阻塞/风险",
+        "",
+        *risk_lines[:8],
+        "",
+        "## 下一步",
+        "",
+        "- 按 docs/dev 优先级推进 Phase 3：协议冻结、Nakama/PostgreSQL、C++ BattleServer、SpellKard 在线 UI/验证。",
+        "- 简单线性改动不强制 PR；跨仓、回归、协议/网络/安全、多路验证或并行开发才走分支/PR。",
+        "- Watchdog 不打断正在运行的 goal agent，只记录风险并等待下一轮采样。",
+    ]
+    return "\n".join(concise_lines) + "\n"
+
     lines = [
         "## 更新前服务器状态",
         "",
@@ -1546,10 +1608,10 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
         "",
         *(repo_status_sentence(name, repo if isinstance(repo, dict) else {}) for name, repo in sorted(repos.items())),
         "",
-        "## 本小时完成内容",
+        f"## 最近 {REPORT_INTERVAL_HOURS} 小时完成内容",
         "",
         f"- watchdog 已采样 manager、agent、仓库、PR、Godot Linux、Docker 和 docker-compose 状态，采样时间 {summary.get('generated_at', '')}。",
-        f"- docs/ops 当前策略要求 feature branch、阶段性 commit、PR 审批流程，不再默认直接推 main。",
+        "- docs/ops 当前策略要求阶段性 commit；简单线性改动不强制 PR，复杂/跨仓/回归/安全任务才走分支和 PR。",
         "- agent 停滞判定已使用 scope 路径 commit 指纹，不再把同仓其他 scope 的 repo HEAD 变化误算为本 scope 进展。",
         "- 四个开发 scope 与两个报告/审计 scope 均按持续 `/goal` scope 管理；每个新小时会补位拉起，若同仓有活动锁或外来分支则暂缓。",
         "- 历史漏检原因已定位：旧逻辑把同仓 repo HEAD、全局 heartbeat、无上一轮基线和过宽的日志输出算作 scope 进展；现在只有 scope 路径提交、scoped diff、scope heartbeat、有效报告/测试/日志变化才算推进。",
@@ -1586,10 +1648,10 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
     else:
         lines.append("- 当前未发现 open PR。")
 
-    lines.extend(["", "## 阻塞/风险", "", *risk_lines, "", "## 下一小时建议", ""])
+    lines.extend(["", "## 阻塞/风险", "", *risk_lines, "", f"## 下个 {REPORT_INTERVAL_HOURS} 小时建议", ""])
     lines.extend(
         [
-            "- 新开发任务按 feature branch + PR 推进，并在 PR 中写明测试、风险、协议/网络/安全影响。",
+            "- 新开发任务按 docs/dev 优先级推进；简单线性改动不强制 PR，复杂/跨仓/回归/安全任务才走分支和 PR。",
             "- SpellKard 改动优先用 Linux Godot headless 跑对应 smoke/check 脚本。",
             "- 服务器无显卡导致的纯 Godot 渲染器失败可标记为 ignored/blocked；GDScript 编译、类型和脚本合同失败仍必须修复。",
             "- Gensoulkyo 与 PhK-BattleServer 优先补 Dockerfile/docker-compose 回归入口，再跑服务端回归。",
@@ -1644,16 +1706,16 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
                 if isinstance(item, dict)
             ]
             if merged_titles:
-                merged_main_notes.append(f"- {repo_name}: 当前 {branch} 基线包含最近已合并 PR（{'; '.join(merged_titles)}），不按直接推 main 处理。")
+                merged_main_notes.append(f"- {repo_name}: 当前 {branch} 基线包含最近已合并 PR（{'; '.join(merged_titles)}），不按未审计线性提交处理。")
             else:
-                direct_main_risks.append(f"- {repo_name}: 当前 {branch} 近一小时有提交但未采样到最近 merged PR，需要确认是否为授权 hotfix。")
+                direct_main_risks.append(f"- {repo_name}: 当前 {branch} 近 {REPORT_INTERVAL_HOURS} 小时有提交但未采样到最近 merged PR，需要确认是否为授权线性改动或 hotfix。")
 
     docker_files = docker.get("repo_files") if isinstance(docker.get("repo_files"), dict) else {}
     flow_risks = list(direct_main_risks)
     if pr_sample_failures:
         flow_risks.append(f"- GitHub PR 采样失败: {', '.join(pr_sample_failures)}；流程审计不能把失败当成无 PR。")
     elif open_pr_count == 0 and not merged_main_notes:
-        flow_risks.append("- 当前无 open PR；后续开发应补齐 feature branch + PR 轨迹。")
+        flow_risks.append("- 当前无 open PR；这不阻塞简单线性进展，但复杂/跨仓/回归/安全任务需要补齐分支/PR 轨迹。")
     flow_risks.extend(blocked_prs)
     if not godot.get("exists") or not godot.get("executable"):
         flow_risks.append("- Godot Linux headless 不可用，SpellKard 阶段验证不完整。")
@@ -1673,6 +1735,35 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
     if merged_main_notes:
         flow_risks.extend(merged_main_notes)
 
+    concise_audit = [
+        "# gotouhou 方向审计",
+        "",
+        f"审计时间：{summary.get('generated_at', '')}",
+        "",
+        "## 阶段判断",
+        "",
+        f"- 整体完成度约 {PROJECT_COMPLETION_PERCENT}%，主线仍是 Phase 3：协议冻结、Nakama/Go 业务服、C++ BattleServer 权威边界。",
+        "- SpellKard 的 UI/弹幕工作应服务 Phase 2/6/8 的客户端展示、练习、Replay 和验证合同。",
+        "- ops/watchdog 只服务调度、验证和极简汇报，不替代业务实现。",
+        "",
+        "## 流程判断",
+        "",
+        "- 以完成整体项目为第一优先级，任务指派按 docs/dev 优先级排序。",
+        f"- 汇报周期为每 {REPORT_INTERVAL_HOURS} 小时；运行中的 `/goal` agent 不因采样周期到来被打断。",
+        "- 简单线性改动不强制 PR；复杂支线、多路验证、跨仓、协议/网络/安全、回归修复或并行开发才走分支/PR。",
+        "",
+        "## 风险",
+        "",
+        *flow_risks[:8],
+        "",
+        "## 后续提示词原则",
+        "",
+        "- 先读 docs/dev，再做代码；优先 Phase 3 阻塞项。",
+        "- 最终状态只写完成内容、验证结果、阻塞和下一步，不写长日志。",
+        "- 保持 Godot headless、docker-compose、protocol audit 等必要验证。",
+    ]
+    return "\n".join(concise_audit) + "\n"
+
     return "\n".join(
         [
             "# gotouhou 持续方向与流程审计报告",
@@ -1691,11 +1782,11 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
             "- watchdog 停滞检测已改为 scope 路径 commit 指纹，避免同仓其他 scope 提交掩盖本 scope 停滞。",
             "- 停滞判定不再使用全局 manager heartbeat、全局 regression mtime、无上一轮基线或同仓其他 scope 的 repo HEAD；started-only 日志和过期 active lock 会触发替代 worker。",
             "- 已成功退出但留下 scope dirty work 的 fallback 会标记为 version-blocked，并续跑同 scope 完成阶段性 commit、push 和 PR。",
-            "- 已成功退出且本小时完成的连续 `/goal` scope 会标记为 idle-until-next-hour，邮件必须说明这是等待下一小时续跑，不是常驻运行。",
+            f"- 已成功退出且当前 {REPORT_INTERVAL_HOURS} 小时窗口完成的连续 `/goal` scope 会标记为 idle-until-next-hour，邮件必须说明这是等待下个窗口续跑，不是常驻运行。",
             "- fallback runner 已固定 HOME/XDG/GH_CONFIG_DIR、GitHub socks 代理和 credential helper 环境，worker 应可直接推分支、开 PR，并在失败时写入 final log。",
             "- PR 审批被定义为受控动作：读取 PR diff 和 docs/dev 路线、运行对应检查、确认无阻塞后才 `gh pr review --approve`；不自动合并。",
             "- regression 失败会按检查类型分发独立 bugfix agent/branch/PR，且同仓有 active worker 或 bugfix lock 时自动暂缓，避免互相覆盖。",
-            "- 最近 main 提交会结合 GitHub merged PR 采样判断，避免把刚通过 PR 合入的提交误报为直接推 main。",
+            "- 最近 main 提交会结合 GitHub merged PR 采样判断，避免把刚通过 PR 合入的提交误报为未审计线性提交。",
             "",
             "## 潜在偏离或优先级问题",
             "",
@@ -1704,12 +1795,12 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
             "## 结论",
             "",
             "- 符合：新增 ops 方向符合 Phase 6，但下一步必须把实际开发也迁移到 branch + PR 流程。",
-            "- 偏离：直接推 main、无阶段 commit、无 PR、无 Godot/Docker 回归入口都应视为流程偏离并写入邮件风险。",
+            "- 偏离：绕过 docs/dev 优先级、无阶段 commit、复杂任务无必要 PR、无 Godot/Docker 回归入口都应视为流程偏离并写入邮件风险。",
             "- 建议调整：manager/watchdog 继续读代码和路线后审批 PR；业务 worker 聚焦协议冻结、Nakama/数据库、C++ 真实依赖替换、SpellKard headless 运行时验证。",
             "",
             "## 建议调整的 agent 提示词",
             "",
-            "- 所有开发 worker：必须从最新 `origin/main` 创建 feature branch，阶段性 commit，推分支，开 PR；PR 正文写测试、风险、协议/网络/安全影响。",
+            "- 开发 worker：先读 docs/dev，做阶段性 commit；简单线性改动不强制 PR，复杂/跨仓/回归/安全任务从最新 `origin/main` 创建分支并开 PR。",
             "- SpellKard worker：必须使用 `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` 运行相关 headless check。",
             "- SpellKard worker：无显卡导致的纯渲染器错误可记录为环境 blocked；GDScript parse/compile/type error 和脚本合同失败不能忽略。",
             "- 服务端 worker：优先使用 `docker-compose` 回归；缺 Dockerfile/compose 时运行本地回归并记录阻塞。",
@@ -1719,30 +1810,32 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
 
 
 def managed_change_describer_prompt() -> str:
-    return """你是 gotouhou 持续中文摘要 agent（change-describer / Narrator）。
+    return f"""你是 gotouhou 持续中文摘要 agent（change-describer / Narrator）。
 
 工作区：`/root/gotouhou`。运行模式：Codex `/goal` 持续目标模式。每轮必须从本机最新状态生成报告，不能复用上轮结论。
 
-每轮必须读取最新 `/root/gotouhou/.agents/last-watchdog-summary.json`，并检查五个子仓库状态、branch/PR/最近 merged PR 状态、agent roster、systemd unit、locks、logs、reports 更新时间、Godot Linux、Docker 与 `docker-compose` 状态。报告输出到 `/root/gotouhou/.agents/reports/change-summary-latest.md`，同时更新本提示词文件。
+每 {REPORT_INTERVAL_HOURS} 小时读取最新 `/root/gotouhou/.agents/last-watchdog-summary.json`，并检查五个子仓库状态、branch/PR/最近 merged PR 状态、agent roster、systemd unit、locks、logs、reports 更新时间、Godot Linux、Docker 与 `docker-compose` 状态。报告输出到 `/root/gotouhou/.agents/reports/change-summary-latest.md`，同时更新本提示词文件。
 
-摘要必须包含：更新前服务器状态、更新后服务器状态、本小时完成内容、Agent 状态、PR 状态、阻塞/风险、下一小时建议。文字用项目负责人能直接看懂的中文短句，不粘贴冗长 git 原文、diff、日志和命令输出。
+摘要必须极简，包含：整体完成百分比、当前主线、回归状态、active/failed/blocked agent、关键阻塞、下一步 3 条以内。文字用项目负责人能直接看懂的中文短句，不粘贴冗长 git 原文、diff、日志和命令输出。
 
-必须写入风险：报告未更新、agent lock 残留或 started-only 日志、active 但无有效输出、dead lock 被清理、补救后未重采样、已退出 fallback 仍显示 started/running、已退出 fallback 留下 scope dirty work 却被误报 completed、同小时已完成的持续 scope 未标记 idle-until-next-hour、非零退出未标 failed、未走 feature branch + PR、main 近一小时提交无法匹配 merged PR、PR 采样失败、watchdog 查出的代码问题未开独立 bugfix PR、bugfix PR 被分支保护阻塞、Godot Linux headless 未跑、服务端 Docker/`docker-compose` 回归缺失、watchdog/邮件异常、key alias 缺失、工作区已有未提交改动但被误报为完成。
+必须写入风险：报告未更新、agent lock 残留或 started-only 日志、active 但无有效输出、dead lock 被清理、补救后未重采样、已退出 fallback 仍显示 started/running、已退出 fallback 留下 scope dirty work 却被误报 completed、非零退出未标 failed、PR 采样失败、watchdog 查出的代码问题未开独立 bugfix PR、bugfix PR 被分支保护阻塞、Godot Linux headless 未跑、服务端 Docker/`docker-compose` 回归缺失、watchdog/邮件异常、key alias 缺失、工作区已有未提交改动但被误报为完成。
 
-不得把全局 manager heartbeat、全局 regression 文件 mtime、同仓其他 scope 的 repo HEAD 变化当成某个 scope 的推进。服务器无显卡导致的纯 Godot 渲染器失败可以写为 ignored/blocked，不算功能失败；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败仍必须写为真实阻塞。
+不得把全局 manager heartbeat、全局 regression 文件 mtime、同仓其他 scope 的 repo HEAD 变化当成某个 scope 的推进。不要因为新汇报周期到来就打断仍在运行的 `/goal` agent；只报告风险。服务器无显卡导致的纯 Godot 渲染器失败可以写为 ignored/blocked，不算功能失败；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败仍必须写为真实阻塞。
+
+不把所有提交都要求 PR；只有复杂支线、多路验证、跨仓、协议/网络/安全、回归修复或并行开发需要分支/PR。
 
 不得泄露 SMTP 密码、token、私钥、API key 或任何凭据；可以写 key alias 和 agent scope，不能写 key value。只允许写 `.agents/reports/change-summary-latest.md` 和 `.agents/agent-prompts/change-describer.md`，不修改五个子仓库，不提交，不推送。写报告和提示词必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
 """
 
 
 def managed_plan_auditor_prompt() -> str:
-    return """你是 gotouhou 持续方向审计 agent（plan-auditor / Auditor）。
+    return f"""你是 gotouhou 持续方向审计 agent（plan-auditor / Auditor）。
 
 工作区：`/root/gotouhou`。运行模式：Codex `/goal` 持续目标模式。
 
-每轮读取 `/root/gotouhou/docs/dev/progress.md` 与 `/root/gotouhou/docs/dev/gotouhou/**/*.md`，再检查五个子仓库状态、branch/PR/最近 merged PR 形态、最近提交、systemd/lock/log 真实进程状态、最新 watchdog summary、Godot Linux headless 能力、Docker/`docker-compose` 回归能力和 open PR。判断新增功能与开发流程是否符合 Phase 2/3/6/8、网络安全、Nakama、大厅/房间、C++ BattleServer、Godot UI/弹幕路线。
+每 {REPORT_INTERVAL_HOURS} 小时读取 `/root/gotouhou/docs/dev/progress.md` 与 `/root/gotouhou/docs/dev/gotouhou/**/*.md`，再检查五个子仓库状态、branch/PR/最近 merged PR 形态、最近提交、systemd/lock/log 真实进程状态、最新 watchdog summary、Godot Linux headless 能力、Docker/`docker-compose` 回归能力和 open PR。判断新增功能与开发流程是否符合 Phase 2/3/6/8、网络安全、Nakama、大厅/房间、C++ BattleServer、Godot UI/弹幕路线。
 
-必须审计：是否缺阶段性 commit、是否直接推 main、main 近一小时提交是否能匹配 recently merged PR、是否缺 PR、PR 是否读完代码和路线后再审批、watchdog 查出的代码问题是否开独立 bugfix 分支/PR 并测试合回、SpellKard 是否用 Linux Godot headless 验证、服务端是否使用 Docker/`docker-compose` 或记录缺口、邮件内容是否及时反映 agent 真实进程状态和阻塞风险。补救动作后没有重采样、started-only 日志、active 但无有效输出、dead lock、已退出 fallback 仍显示 started、已退出 fallback 留下 scope dirty work 却被误报 completed、同小时完成的持续 scope 未标 idle-until-next-hour、非零退出未标 failed、报告未更新、用无上一轮基线、同仓其他 scope 的 repo HEAD、全局 manager heartbeat 或全局 regression mtime 掩盖 scope 停滞，都算 agent 未正常执行，不得当成正常运行。服务器无显卡导致的纯 Godot 渲染器失败可以忽略为环境 blocked；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败不能忽略。
+必须审计：任务是否按 docs/dev 优先级推进整体项目，是否缺阶段性 commit，是否滥用 PR 阻碍线性进展，复杂/回归/跨仓/协议网络安全任务是否缺分支 PR，PR 是否读完代码和路线后再审批，watchdog 查出的代码问题是否开独立 bugfix 分支/PR 并测试合回，SpellKard 是否用 Linux Godot headless 验证，服务端是否使用 Docker/`docker-compose` 或记录缺口，邮件是否极简且反映真实阻塞。不得因为新汇报周期到来打断正在运行的 `/goal` agent。服务器无显卡导致的纯 Godot 渲染器失败可以忽略为环境 blocked；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败不能忽略。
 
 输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`，同时更新本提示词文件。只允许写 `.agents` 下指定文件，不修改 git 仓库，不提交，不推送。不得泄露凭据。结论必须明确“符合/偏离/建议调整”，并给出可直接交给后续 worker 的中文提示词。写报告和提示词必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
 """
@@ -1899,7 +1992,9 @@ def prompt_key_line(key_assignment: dict[str, Any]) -> str:
 def goal_prompt_preamble(scope_id: str, reason: str, key_assignment: dict[str, Any]) -> str:
     return f"""Codex /goal mode requirement:
 - Treat this launch as a sustained `/goal` task, not a one-shot note.
-- Keep working until the scoped objective is genuinely handled, verified, committed on a feature branch when repository files changed, pushed, and represented by a pull request.
+- Keep working until the scoped objective materially advances the whole project and is verified.
+- Use docs/dev priority as the source of truth. Overall project completion is more important than producing verbose reports or unnecessary PR ceremony.
+- Use a branch/PR only for complex, risky, multi-repo, regression, protocol/network/security, or parallel exploration work. Small linear changes may be committed on the current target branch when local policy allows.
 - If interrupted, resume from local state, active locks, logs, and the latest `origin/main` without reverting others.
 - Scope id: `{scope_id}`.
 - Launch reason: {reason}
@@ -1944,8 +2039,8 @@ Implementation requirements:
 - SpellKard scopes must use `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` for Linux headless checks when touching Godot scripts/scenes/assets.
 - Gensoulkyo and PhK-BattleServer scopes should prefer Docker/`docker-compose` regression where repository files exist; if no Dockerfile/compose exists, run local checks and record that Docker coverage is blocked.
 - For network/protocol/server scopes, run `/root/gotouhou/docs/ops/protocol_audit_check.py`.
-- Push the feature branch and create a PR. Do not push directly to `main` unless the manager explicitly authorizes an emergency hotfix.
-- Use the inherited GitHub CLI auth and proxy from the fallback runner. If `git push` or `gh pr create` fails, write the exact non-secret blocker to your final status; do not remain running after a local commit with no PR.
+- Push and create a PR only when this task used a branch or needs multi-path review/validation. Do not manufacture PRs for small linear changes where the current repository policy allows direct progress.
+- Use the inherited GitHub CLI auth and proxy from the fallback runner. If `git push` or `gh pr create` is required and fails, write the exact non-secret blocker to your final status.
 - If watchdog/regression reveals a code failure in your scope, switch to a dedicated `fix/<area>` branch/PR first; after tests pass, request merge and report any branch protection blocker.
 - Write a concise final status to `/root/gotouhou/.agents/logs/{scope_id}-final.md`.
 """
@@ -1957,29 +2052,29 @@ def summary_agent_prompt(reason: str, key_assignment: dict[str, Any]) -> str:
 你是 gotouhou 持续中文摘要 agent（change-describer / Narrator）。
 
 工作区：/root/gotouhou
-运行模式：Codex `/goal` 持续目标模式。每小时被 watchdog 拉起时，都要完成一次独立摘要并写回状态；异常中断后从 `.agents` 最新状态恢复。
+运行模式：Codex `/goal` 持续目标模式。每 {REPORT_INTERVAL_HOURS} 小时被 watchdog 拉起时，都要完成一次极简摘要并写回状态；异常中断后从 `.agents` 最新状态恢复。
 
 任务：
-1. 先读取最新 `/root/gotouhou/.agents/last-watchdog-summary.json`，再检查五个子仓库当前状态、最近一小时提交、branch/PR 状态、`/root/gotouhou/.agents/agent-roster.json`、systemd unit、locks、logs 和 reports 更新时间。
+1. 先读取最新 `/root/gotouhou/.agents/last-watchdog-summary.json`，再检查五个子仓库当前状态、近 {REPORT_INTERVAL_HOURS} 小时提交、branch/PR 状态、`/root/gotouhou/.agents/agent-roster.json`、systemd unit、locks、logs 和 reports 更新时间。
 2. 检查运行环境是否变化：Godot Linux `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` 是否可执行、Docker 和 `docker-compose` 是否可用、服务端仓库是否有 Dockerfile/compose。
 3. 把增改功能、agent 状态、阻塞风险、运行环境和版本管理状态转写成简单中文描述，替换邮件里可读性差的原始日志。
 3. 输出 `/root/gotouhou/.agents/reports/change-summary-latest.md`。
 4. 同时更新 `/root/gotouhou/.agents/agent-prompts/change-describer.md`，记录你自己的最新提示词。
 5. 不修改任何 git 仓库文件，不提交，不推送。
 
-摘要格式：
-- 更新前服务器状态。
-- 更新后服务器状态。
-- 本小时完成内容。
-- 阻塞/风险。
-- 下一小时建议。
+摘要格式保持极简：
+- 项目进度：整体完成百分比、当前主线、已完成/未完成。
+- 服务器状态：回归、active agent、failed/blocked、open PR。
+- 阻塞/风险：只列最重要的 5-8 条。
+- 下一步：按 docs/dev 优先级给 3 条以内。
 
 写作要求：
 - 不泄露 SMTP 密码、token、私钥、API key 或任何凭据。
 - 可以写 key alias 和 agent scope，但不能写 key value。
 - 不粘贴冗长 git 原文、diff、日志和命令输出。
 - 用项目负责人能直接看懂的中文短句。
-- 如果发现 watchdog 误启动、重复启动、lock 残留、报告未更新、key 分配缺失、已退出 fallback 仍显示 started/running、非零退出未标 failed、未走分支/PR、watchdog 查出的代码问题未开独立 bugfix PR、Godot/Docker 检查缺失，必须写入风险。
+- 如果发现 watchdog 误启动、重复启动、lock 残留、报告未更新、key 分配缺失、已退出 fallback 仍显示 started/running、非零退出未标 failed、watchdog 查出的代码问题未开独立 bugfix PR、Godot/Docker 检查缺失，必须写入风险。
+- 不把所有提交都要求 PR；只有复杂支线、多路验证、跨仓、协议/网络/安全、回归修复或并行开发需要分支/PR。
 - 只允许写 `.agents/reports/change-summary-latest.md` 和 `.agents/agent-prompts/change-describer.md`；不要改五个子仓库里的文件。
 """
 
@@ -1990,12 +2085,12 @@ def audit_agent_prompt(reason: str, key_assignment: dict[str, Any]) -> str:
 你是 gotouhou 持续方向审计 agent（plan-auditor / Auditor）。
 
 工作区：/root/gotouhou
-运行模式：Codex `/goal` 持续目标模式。每小时被 watchdog 拉起时，都要完成一次方向审计并给出后续 agent 提示词；异常中断后从 `.agents` 最新状态恢复。
+运行模式：Codex `/goal` 持续目标模式。每 {REPORT_INTERVAL_HOURS} 小时被 watchdog 拉起时，做一次极简方向审计并给出后续 agent 提示词；异常中断后从 `.agents` 最新状态恢复。
 
 任务：
 1. 阅读 `/root/gotouhou/docs/dev/progress.md` 和 `/root/gotouhou/docs/dev/gotouhou/**/*.md` 中当前阶段计划，重点关注 Phase 2/3/6/8、网络安全、Nakama、大厅、C++ BattleServer、Godot UI/弹幕。
 2. 检查五个子仓库 `docs`、`Gensoulkyo`、`SpellKard`、`PhK-Protocol`、`PhK-BattleServer` 的当前状态、branch/PR 形态、最近提交、systemd/lock/log 真实进程状态和最新 watchdog summary，判断新增功能是否符合计划方向。
-3. 检查开发流程是否偏离：是否缺少阶段性 commit、是否直接推 main、是否缺 PR、watchdog 查出的代码问题是否开独立 bugfix branch/PR 并测试合回、是否缺 Godot Linux headless 或 Docker/`docker-compose` 回归。
+3. 检查开发流程是否偏离：是否服务 docs/dev 优先级、是否缺少阶段性 commit、是否滥用 PR 阻碍线性进展、复杂/回归/跨仓任务是否缺 PR、watchdog 查出的代码问题是否开独立 bugfix branch/PR 并测试合回、是否缺 Godot Linux headless 或 Docker/`docker-compose` 回归。
 4. 明确审计“符合/偏离/建议调整”。如果存在较大偏离，提出需要调整的 agent 方向和可直接替换的中文提示词；如果没有较大偏离，也要给出下一轮更合适的 agent 提示词。
 4. 输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`。
 5. 同时更新 `/root/gotouhou/.agents/agent-prompts/plan-auditor.md`，记录你自己的最新提示词。
@@ -2013,7 +2108,7 @@ def audit_agent_prompt(reason: str, key_assignment: dict[str, Any]) -> str:
 - 审计要覆盖 Phase 2/3/6/8、网络安全、Nakama、房间/大厅、C++ BattleServer、Godot UI/弹幕。
 - 结论必须明确“符合/偏离/建议调整”。
 - 提示词必须是中文，且可直接交给后续 worker 使用。
-- 后续 worker 提示词必须包含分支/PR/阶段性提交、Godot Linux headless、服务端 Docker/`docker-compose` 回归和邮件状态及时更新要求。
+- 后续 worker 提示词必须包含 docs/dev 优先级、按需分支/PR、阶段性提交、Godot Linux headless、服务端 Docker/`docker-compose` 回归和极简状态更新要求。
 - 最终只汇报写入路径、是否偏离、建议调整摘要。
 """
 
@@ -2040,8 +2135,9 @@ Ensure the four development scopes are covered:
 
 If a scope is missing, blocked, or stale, launch a scoped worker or continue the
 work directly without reverting unrelated edits. Keep `/root/gotouhou/.agents`
-updated. Use branch + PR flow for repository changes; do not directly push main
-except for explicit emergency hotfixes authorized by the manager.
+updated. Simple linear changes may continue without a PR when locally verifiable;
+use branch + PR for complex, cross-repo, risky, protocol/network/security,
+regression-fix, parallel, or multi-path validation work.
 If a worker has a local commit but push/PR failed, treat it as publish-blocked,
 not running: stop stale units, clear the scope lock, publish with available
 manager credentials, and record the action in the next watchdog/mail snapshot.
@@ -2050,13 +2146,13 @@ If watchdog regression finds code failures, create or monitor a dedicated
 bugfix branch/PR. Once tests pass, read the PR diff and related docs/dev route,
 approve when appropriate, then attempt merge only within repository policy. If
 branch protection blocks merging, record the PR URL and blocker in manager
-status and hourly mail.
+status and periodic mail.
 
 Use the optimized direction from `/root/gotouhou/.agents/reports/plan-audit-latest.md`
 when deciding the next worker prompt. Keep key values secret; state only aliases.
-Make sure hourly mail content is based on the latest watchdog snapshot, locks,
-reports, branch/PR state, Godot Linux availability, and Docker/`docker-compose`
-test capability.
+Do not interrupt running `/goal` workers just because a new report interval arrived.
+Make sure periodic mail content is based on the latest watchdog snapshot and stays
+brief: project percent, current phase, regression, blockers, and next priorities.
 """
 
 
@@ -2410,15 +2506,17 @@ def evaluate_scope(
         should_start = False
     elif active_stalled:
         action_reason = active_stall_reason or f"active agent stalled for {stalled_count} samples"
-        stop_action = stop_stalled_lock(lock_file, lock, action_reason, dry_run=dry_run)
-        actions.append(stop_action)
-        lock = lock_status(lock_file, now)
-        if not lock.get("alive"):
-            should_start = True
-            roster_entry["status"] = "failed"
-            roster_entry["last_failure_reason"] = action_reason
-        else:
-            should_start = False
+        actions.append(
+            {
+                "type": "active-agent-observed",
+                "scope": scope_id,
+                "repo": repo,
+                "reason": action_reason,
+                "policy": "do-not-interrupt-running-goal-agent",
+                "lock": lock,
+            }
+        )
+        should_start = False
     elif lock.get("alive"):
         should_start = False
     elif recent_launch_failed:
@@ -2432,9 +2530,9 @@ def evaluate_scope(
         started_this_hour = bool(last_started and hour_bucket(last_started) == hour_bucket(now))
         if not started_this_hour:
             should_start = True
-            action_reason = "scheduled hourly continuous /goal scope"
+            action_reason = f"scheduled {REPORT_INTERVAL_HOURS}-hour continuous /goal scope"
         elif completed_runtime and not scoped_dirty:
-            action_reason = "continuous /goal scope completed this hour and is idle until next hourly launch"
+            action_reason = f"continuous /goal scope completed this interval and is idle until next {REPORT_INTERVAL_HOURS}-hour launch"
     elif completed and not started_this_hour:
         should_start = True
         action_reason = "completed scope needs sustained /goal continuation"
@@ -2832,7 +2930,7 @@ def stale_artifact_actions(root: Path, now: dt.datetime) -> list[dict[str, Any]]
             actions.append({"type": "artifact-stale", "scope": scope_id, "reason": "managed report file missing", "path": str(report)})
             continue
         age_seconds = max(0, int(now.timestamp() - report.stat().st_mtime))
-        if age_seconds > 90 * 60:
+        if age_seconds > (REPORT_INTERVAL_HOURS * 60 + 30) * 60:
             actions.append(
                 {
                     "type": "artifact-stale",
@@ -2960,6 +3058,8 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         "version": 1,
         "generated_at": final_generated_at,
         "hour_bucket": current_bucket,
+        "report_interval_hours": REPORT_INTERVAL_HOURS,
+        "project_completion_percent": PROJECT_COMPLETION_PERCENT,
         "root": str(root),
         "dry_run": bool(args.dry_run),
         "resampled_after_actions": resampled_after_actions,

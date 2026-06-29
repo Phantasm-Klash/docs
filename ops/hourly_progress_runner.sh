@@ -17,7 +17,12 @@ mkdir -p "$GOCACHE" "$GOPATH"
 
 /usr/bin/python3 "$DOCS/ops/run_regression_checks.py" --root "$ROOT" > "$REGRESSION_LOG" 2>&1 || true
 
-if /usr/bin/python3 "$DOCS/ops/agent_watchdog.py" --root "$ROOT" --approve-prs > "$AGENTS/watchdog-last-run.json" 2> "$ERROR_LOG"; then
+set -- --root "$ROOT"
+if [ "${GOTOUHOU_WATCHDOG_APPROVE_PRS:-0}" = "1" ]; then
+  set -- "$@" --approve-prs
+fi
+
+if /usr/bin/python3 "$DOCS/ops/agent_watchdog.py" "$@" > "$AGENTS/watchdog-last-run.json" 2> "$ERROR_LOG"; then
   rm -f "$ERROR_LOG"
 else
   status=$?

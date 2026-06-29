@@ -1,5 +1,5 @@
 [Unit]
-Description=Send gotouhou hourly development progress email
+Description=Send gotouhou three-hour development progress email
 
 [Service]
 Type=oneshot

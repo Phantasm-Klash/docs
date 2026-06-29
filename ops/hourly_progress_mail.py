@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send an hourly multi-repository development progress summary.
+"""Send a periodic multi-repository development progress summary.
 
 The script is intentionally dependency-free so it can run from cron or a
 systemd timer on a development host. SMTP credentials are read from the
@@ -21,6 +21,8 @@ from pathlib import Path
 
 DEFAULT_REPOS = ("docs", "SpellKard", "Gensoulkyo", "PhK-BattleServer", "PhK-Protocol")
 DEFAULT_WATCHDOG_SUMMARY = "/root/gotouhou/.agents/last-watchdog-summary.json"
+REPORT_INTERVAL_HOURS = 3
+PROJECT_COMPLETION_PERCENT = 38
 
 
 def run_git(repo: Path, args: list[str]) -> str:
@@ -74,7 +76,7 @@ def scope_risk_description(scope_id: str, scope: dict[str, object]) -> str:
     if scope.get("failed_runtime"):
         reasons.append("fallback 非零退出")
     if scope.get("idle_until_next_hour"):
-        reasons.append("本小时已完成，等待下一小时继续 /goal")
+        reasons.append(f"当前 {REPORT_INTERVAL_HOURS} 小时窗口已完成，等待下个窗口继续 /goal")
     stalled_count = int(scope.get("stalled_count", 0) or 0)
     if stalled_count >= 2:
         reasons.append("连续两次无 scoped diff/commit/scope heartbeat/test signal")
@@ -124,12 +126,49 @@ def summarize_repo_brief(root: Path, name: str) -> str:
     branch = run_git(repo, ["branch", "--show-current"])
     head = run_git(repo, ["rev-parse", "--short", "HEAD"])
     status = run_git(repo, ["status", "--short", "--branch"])
-    commits = run_git(repo, ["log", "--since=1 hour ago", "--oneline", "--max-count=5"])
+    commits = run_git(repo, ["log", f"--since={REPORT_INTERVAL_HOURS} hours ago", "--oneline", "--max-count=5"])
     dirty = [line for line in status.splitlines() if line and not line.startswith("## ")]
     upstream = next((line for line in status.splitlines() if line.startswith("## ")), "## status unavailable")
-    commit_text = "; ".join(commits.splitlines()) if commits and commits != "(no output)" else "no commits in last hour"
+    commit_text = "; ".join(commits.splitlines()) if commits and commits != "(no output)" else f"no commits in last {REPORT_INTERVAL_HOURS}h"
     dirty_text = "clean" if not dirty else f"{len(dirty)} dirty: " + "; ".join(dirty[:5])
     return f"- {name}: {branch or '(unknown)'} {head or '(no head)'} {upstream}; {dirty_text}; {commit_text}"
+
+
+def minimal_watchdog_lines(summary: dict[str, object]) -> list[str]:
+    if not summary:
+        return ["- Watchdog: no summary file found"]
+    scopes = summary.get("scopes") if isinstance(summary.get("scopes"), dict) else {}
+    regression = summary.get("regression") if isinstance(summary.get("regression"), dict) else {}
+    pull_requests = summary.get("pull_requests") if isinstance(summary.get("pull_requests"), dict) else {}
+    actions = summary.get("actions") if isinstance(summary.get("actions"), list) else []
+    active = [
+        scope_id
+        for scope_id, raw_scope in scopes.items()
+        if isinstance(raw_scope, dict) and (raw_scope.get("lock") or {}).get("alive")
+    ]
+    failed_or_blocked = [
+        scope_id
+        for scope_id, raw_scope in scopes.items()
+        if isinstance(raw_scope, dict) and (raw_scope.get("failed_runtime") or raw_scope.get("recent_launch_failed") or raw_scope.get("version_blocked"))
+    ]
+    open_pr_count = 0
+    pr_unknown = False
+    for raw_repo in pull_requests.values():
+        repo = raw_repo if isinstance(raw_repo, dict) else {}
+        count = repo.get("open_count")
+        if isinstance(count, int):
+            open_pr_count += count
+        else:
+            pr_unknown = True
+    return [
+        f"- Generated: {summary.get('generated_at', '(unknown)')}",
+        f"- Overall progress: about {PROJECT_COMPLETION_PERCENT}%",
+        "- Current phase: Phase 3, server-authoritative online MVP and server split convergence",
+        f"- Regression: ok={regression.get('ok', 'unknown')} failed={regression.get('failed_count', 'unknown')}",
+        f"- Active agents: {', '.join(sorted(active)) if active else 'none'}",
+        f"- Failed/blocked agents: {', '.join(sorted(failed_or_blocked)) if failed_or_blocked else 'none'}",
+        f"- Open PRs: {'unknown' if pr_unknown else open_pr_count}; watchdog actions={len(actions)}; started={summary.get('started_count', 0)}",
+    ]
 
 
 def watchdog_lines(summary: dict[str, object]) -> list[str]:
@@ -307,7 +346,7 @@ def build_body(root: Path, repos: tuple[str, ...]) -> str:
     sections = [summarize_repo(root, repo) for repo in repos]
     return "\n".join(
         [
-            f"gotouhou hourly development update",
+            f"gotouhou {REPORT_INTERVAL_HOURS}h development update",
             f"Generated: {now}",
             f"Workspace: {root}",
             "",
@@ -320,28 +359,22 @@ def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: 
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     watchdog = read_json(watchdog_summary_path)
     repo_lines = [summarize_repo_brief(root, repo) for repo in repos]
-    agent_prompt_lines = build_agent_prompt_lines(root)
     lines = [
-        "gotouhou 每小时开发简报",
+        f"gotouhou {REPORT_INTERVAL_HOURS}小时开发简报",
         f"Generated: {now}",
         f"Workspace: {root}",
         f"Watchdog summary: {watchdog_summary_path}",
         "",
-        *watchdog_lines(watchdog),
+        "项目进度:",
+        *minimal_watchdog_lines(watchdog),
         "",
         "服务器状态:",
         *repo_lines,
         "",
-        "Agent 提示词位置:",
-        "- 当前运行/补救提示词: /root/gotouhou/.agents/prompts/",
-        "- 中文摘要 agent 提示词: /root/gotouhou/.agents/agent-prompts/change-describer.md",
-        "- 方向审计 agent 提示词: /root/gotouhou/.agents/agent-prompts/plan-auditor.md",
-        "",
-        *agent_prompt_lines,
-        "",
-        "说明:",
-        "- 网络/协议相关变更继续由 docs/ops/protocol_audit_check.py 审计。",
-        "- SMTP 密码只在主机环境文件中读取，不会写入邮件正文或 git。",
+        "下一步:",
+        "- 按 docs/dev 优先级继续 Phase 3：协议、Nakama/PostgreSQL、C++ BattleServer、SpellKard 在线 UI/验证。",
+        "- 正在运行的 `/goal` agent 不因汇报周期被打断。",
+        "- 简单线性改动不强制 PR；复杂/跨仓/回归/多路验证才走分支 PR。",
     ]
     return "\n".join(lines)
 
@@ -426,7 +459,7 @@ def main(argv: list[str]) -> int:
     root = Path(args.root).resolve()
     repos = tuple(args.repos) if args.repos else DEFAULT_REPOS
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    subject = f"[gotouhou] hourly development update {now}"
+    subject = f"[gotouhou] {REPORT_INTERVAL_HOURS}h development update {now}"
     if args.brief:
         body = build_brief_body(root, repos, Path(args.watchdog_summary).resolve())
     else:
