@@ -2355,9 +2355,6 @@ def evaluate_scope(
         if not started_this_hour:
             should_start = True
             action_reason = "scheduled hourly continuous /goal scope"
-        elif not progress and stalled_count >= 1:
-            should_start = True
-            action_reason = "continuous scope produced no useful report update"
     elif completed and not started_this_hour:
         should_start = True
         action_reason = "completed scope needs sustained /goal continuation"
