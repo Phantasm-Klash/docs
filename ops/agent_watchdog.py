@@ -58,6 +58,7 @@ GIT_FLOW_PROMPT = """版本控制和 PR 流程：
 - PR 审批前必须读 PR diff、相关 docs/dev 路线和测试结果；审批不等于自动合并。
 - 每次最终状态和邮件必须来自补救动作后的最新采样；不能把启动前的旧 lock/unit/PR 状态当作最终状态。
 - 连续样本无 commit、无 scoped diff、无有效日志、无 report/final 状态更新、无 scope 专属 heartbeat 或测试指纹变化的 agent 算停滞；只有 `[watchdog] started` 的日志不能算正常运行。
+- `codex exec` fallback 是按轮次完成后退出的执行器，不是常驻 daemon；日志出现 `[watchdog] exited status=0` 且 systemd unit 不活跃时，应记录为 completed/idle，不能继续显示 started/running。非零退出必须记录 failed 并进入补救判断。
 - 不得把全局 manager heartbeat 或整点全局 regression 文件 mtime 当作某个 scope 的推进信号。
 """
 
@@ -107,6 +108,9 @@ DEFAULT_SCOPES: dict[str, dict[str, Any]] = {
         "paths": (
             "cmd/gensoulkyo_nakama",
             "dev/progress.md",
+            "Dockerfile",
+            "docker-compose.yml",
+            "migrations",
             "runtime/core",
             "runtime/nakamaapi",
         ),
@@ -118,6 +122,8 @@ DEFAULT_SCOPES: dict[str, dict[str, Any]] = {
         "repo": "PhK-BattleServer",
         "paths": (
             "dev/progress.md",
+            "Dockerfile",
+            "docker-compose.yml",
             "docs/architecture.md",
             "include/phk/battle",
             "src",
@@ -755,7 +761,7 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
         f"Godot Linux: {godot.get('path', DEFAULT_GODOT_LINUX)} exists={godot.get('exists')} executable={godot.get('executable')} version={godot.get('version', '')}",
         f"Docker: available={docker.get('available')} docker-compose={docker.get('docker_compose_available')} version={docker.get('docker_compose_version', '')}",
         "",
-        "## Active goal scopes",
+        "## Managed goal scopes",
         "",
         "| Scope | Repo | Status | Key alias | Progress | Stalled | Head | Actions |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -1006,6 +1012,50 @@ def log_status(path: Path | None) -> dict[str, Any]:
 
 def log_has_useful_output(log: dict[str, Any]) -> bool:
     return bool(log.get("useful_hash") and int(log.get("useful_line_count", 0) or 0) > 0)
+
+
+def log_finished_successfully(log: dict[str, Any]) -> bool:
+    return bool(log.get("exited") and log.get("exit_status") == 0)
+
+
+def log_finished_with_failure(log: dict[str, Any]) -> bool:
+    return bool(log.get("exited") and log.get("exit_status") != 0)
+
+
+def runtime_log_for_roster(roster_entry: dict[str, Any], latest_log: Path | None) -> tuple[dict[str, Any], Path | None]:
+    fallback_log_path = roster_entry.get("fallback_log_path")
+    if isinstance(fallback_log_path, str) and fallback_log_path:
+        path = Path(fallback_log_path)
+        return log_status(path), path
+    return log_status(latest_log), latest_log
+
+
+def reconcile_roster_exit_status(
+    roster_entry: dict[str, Any],
+    *,
+    current_head: str,
+    lock: dict[str, Any],
+    runtime_log: dict[str, Any],
+    now: dt.datetime,
+) -> None:
+    """Reflect finished fallback processes in the roster instead of leaving them as started."""
+    if lock.get("alive") or not runtime_log.get("exited"):
+        return
+    status = str(roster_entry.get("status", ""))
+    if status not in {"started", "running", "active"}:
+        return
+    exit_status = runtime_log.get("exit_status")
+    exited_at = str(runtime_log.get("updated_at") or iso(now))
+    roster_entry["last_exit_status"] = exit_status
+    roster_entry["last_exited_at"] = exited_at
+    if exit_status == 0:
+        roster_entry["status"] = "completed"
+        roster_entry["completed_at"] = exited_at
+        roster_entry["completed_commit"] = current_head
+        roster_entry.pop("last_failure_reason", None)
+    else:
+        roster_entry["status"] = "failed"
+        roster_entry["last_failure_reason"] = f"fallback exited with status {exit_status}"
 
 
 def report_path(root: Path, scope_id: str) -> Path | None:
@@ -1418,6 +1468,30 @@ def cleanup_dead_lock(path: Path, status: dict[str, Any], dry_run: bool) -> dict
     return action
 
 
+def cleanup_finished_lock(path: Path, status: dict[str, Any], dry_run: bool) -> dict[str, Any] | None:
+    if not status.get("exists") or status.get("alive"):
+        return None
+    log = status.get("log") if isinstance(status.get("log"), dict) else {}
+    if not log.get("exited"):
+        return None
+    exit_status = log.get("exit_status")
+    action = {
+        "type": "cleanup-finished-lock" if exit_status == 0 else "cleanup-failed-lock",
+        "reason": "fallback finished cleanly" if exit_status == 0 else f"fallback exited with status {exit_status}",
+        "lock": str(path),
+        "lock_status": status,
+        "dry_run": dry_run,
+    }
+    if not dry_run:
+        try:
+            path.unlink()
+            action["removed"] = True
+        except OSError as exc:
+            action["removed"] = False
+            action["error"] = str(exc)
+    return action
+
+
 def stop_stalled_lock(path: Path, status: dict[str, Any], reason: str, dry_run: bool) -> dict[str, Any]:
     action = {
         "type": "stop-stalled-agent",
@@ -1522,7 +1596,7 @@ def summary_agent_prompt(reason: str, key_assignment: dict[str, Any]) -> str:
 运行模式：Codex `/goal` 持续目标模式。每小时被 watchdog 拉起时，都要完成一次独立摘要并写回状态；异常中断后从 `.agents` 最新状态恢复。
 
 任务：
-1. 先读取最新 `/root/gotouhou/.agents/last-watchdog-summary.json`，再检查五个子仓库当前状态、最近一小时提交、branch/PR 状态、`/root/gotouhou/.agents/agent-roster.json`、locks、logs 和 reports 更新时间。
+1. 先读取最新 `/root/gotouhou/.agents/last-watchdog-summary.json`，再检查五个子仓库当前状态、最近一小时提交、branch/PR 状态、`/root/gotouhou/.agents/agent-roster.json`、systemd unit、locks、logs 和 reports 更新时间。
 2. 检查运行环境是否变化：Godot Linux `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` 是否可执行、Docker 和 `docker-compose` 是否可用、服务端仓库是否有 Dockerfile/compose。
 3. 把增改功能、agent 状态、阻塞风险、运行环境和版本管理状态转写成简单中文描述，替换邮件里可读性差的原始日志。
 3. 输出 `/root/gotouhou/.agents/reports/change-summary-latest.md`。
@@ -1541,7 +1615,7 @@ def summary_agent_prompt(reason: str, key_assignment: dict[str, Any]) -> str:
 - 可以写 key alias 和 agent scope，但不能写 key value。
 - 不粘贴冗长 git 原文、diff、日志和命令输出。
 - 用项目负责人能直接看懂的中文短句。
-- 如果发现 watchdog 误启动、重复启动、lock 残留、报告未更新、key 分配缺失、未走分支/PR、Godot/Docker 检查缺失，必须写入风险。
+- 如果发现 watchdog 误启动、重复启动、lock 残留、报告未更新、key 分配缺失、已退出 fallback 仍显示 started/running、非零退出未标 failed、未走分支/PR、watchdog 查出的代码问题未开独立 bugfix PR、Godot/Docker 检查缺失，必须写入风险。
 - 只允许写 `.agents/reports/change-summary-latest.md` 和 `.agents/agent-prompts/change-describer.md`；不要改五个子仓库里的文件。
 """
 
@@ -1556,8 +1630,8 @@ def audit_agent_prompt(reason: str, key_assignment: dict[str, Any]) -> str:
 
 任务：
 1. 阅读 `/root/gotouhou/docs/dev/progress.md` 和 `/root/gotouhou/docs/dev/gotouhou/**/*.md` 中当前阶段计划，重点关注 Phase 2/3/6/8、网络安全、Nakama、大厅、C++ BattleServer、Godot UI/弹幕。
-2. 检查五个子仓库 `docs`、`Gensoulkyo`、`SpellKard`、`PhK-Protocol`、`PhK-BattleServer` 的当前状态、branch/PR 形态、最近提交和最新 watchdog summary，判断新增功能是否符合计划方向。
-3. 检查开发流程是否偏离：是否缺少阶段性 commit、是否直接推 main、是否缺 PR、是否缺 Godot Linux headless 或 Docker/`docker-compose` 回归。
+2. 检查五个子仓库 `docs`、`Gensoulkyo`、`SpellKard`、`PhK-Protocol`、`PhK-BattleServer` 的当前状态、branch/PR 形态、最近提交、systemd/lock/log 真实进程状态和最新 watchdog summary，判断新增功能是否符合计划方向。
+3. 检查开发流程是否偏离：是否缺少阶段性 commit、是否直接推 main、是否缺 PR、watchdog 查出的代码问题是否开独立 bugfix branch/PR 并测试合回、是否缺 Godot Linux headless 或 Docker/`docker-compose` 回归。
 4. 明确审计“符合/偏离/建议调整”。如果存在较大偏离，提出需要调整的 agent 方向和可直接替换的中文提示词；如果没有较大偏离，也要给出下一轮更合适的 agent 提示词。
 4. 输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`。
 5. 同时更新 `/root/gotouhou/.agents/agent-prompts/plan-auditor.md`，记录你自己的最新提示词。
@@ -1590,6 +1664,10 @@ Mode: Codex `/goal` sustained-target mode.
 
 Inspect `/root/gotouhou/.agents/manager-status.md`, the five child repositories,
 and any active worker logs under `/root/gotouhou/.agents/logs`.
+Treat `codex exec` fallback workers as per-round executors: after
+`[watchdog] exited status=0` and an inactive systemd unit, the scope is completed
+for that round, not still running. Non-zero exits are failures that need a
+replacement worker or a scoped bugfix.
 Ensure the four development scopes are covered:
 - spellkard-bullet
 - spellkard-ui
@@ -1662,7 +1740,10 @@ def start_background_codex(
     key_alias = key_assignment.get("alias")
     if current_lock["alive"]:
         return {"started": False, "reason": "lock-active", "lock": current_lock, "key_alias": key_alias}
+    cleanup_finished_lock(lock, current_lock, dry_run=dry_run)
+    current_lock = lock_status(lock, now)
     cleanup_dead_lock(lock, current_lock, dry_run=dry_run)
+    current_lock = lock_status(lock, now)
     if dry_run:
         return {"started": False, "reason": "dry-run", "lock": current_lock, "key_alias": key_alias}
     if not key_value:
@@ -1830,6 +1911,7 @@ def evaluate_scope(
     current_head = run_git(root / repo, ["rev-parse", "--short", "HEAD"]) or ""
     latest_log = latest_log_path(root, scope_id)
     log = log_status(latest_log)
+    runtime_log, runtime_log_path = runtime_log_for_roster(roster_entry, latest_log)
     log_mtime = latest_log.stat().st_mtime if latest_log and latest_log.exists() else None
     heartbeat_mtime = scope_heartbeat_mtime(root, scope_id)
     test_signal = scope_test_signal(root, scope_id, repo)
@@ -1856,12 +1938,17 @@ def evaluate_scope(
         actions.append({"type": "scope-deferred", "scope": scope_id, "repo": repo, "reason": active_repo_lock_reason})
     lock_file = lock_path(root, scope_id)
     lock = lock_status(lock_file, now)
+    finished_cleanup_action = cleanup_finished_lock(lock_file, lock, dry_run=dry_run)
+    if finished_cleanup_action:
+        actions.append(finished_cleanup_action)
+        lock = lock_status(lock_file, now)
     cleanup_action = cleanup_dead_lock(lock_file, lock, dry_run=dry_run)
     if cleanup_action:
         actions.append(cleanup_action)
         lock = lock_status(lock_file, now)
         roster_entry["status"] = "failed"
         roster_entry["last_failure_reason"] = cleanup_action.get("reason")
+    reconcile_roster_exit_status(roster_entry, current_head=current_head, lock=lock, runtime_log=runtime_log, now=now)
 
     previous_log_hash = previous_scope.get("log_useful_hash")
     commit_progress = bool(previous is None or current_head != previous_repo.get("head"))
@@ -1880,9 +1967,9 @@ def evaluate_scope(
             report_updated = True
     else:
         report_mtime = None
-    recent_launch_failed = bool(lock.get("dead_unfinished"))
+    recent_launch_failed = bool(lock.get("dead_unfinished") or log_finished_with_failure(runtime_log))
     fallback_log_path = roster_entry.get("fallback_log_path") if isinstance(roster_entry.get("fallback_log_path"), str) else ""
-    if fallback_log_path and latest_log and Path(fallback_log_path) == latest_log and not log.get("exited"):
+    if fallback_log_path and latest_log and Path(fallback_log_path) == latest_log and not lock.get("alive") and not log.get("exited"):
         recent_launch_failed = True
     if recent_launch_failed:
         progress = False
@@ -1967,6 +2054,8 @@ def evaluate_scope(
         "log_mtime": log_mtime,
         "log_useful_hash": log.get("useful_hash"),
         "log": log,
+        "runtime_log_path": str(runtime_log_path) if runtime_log_path else None,
+        "runtime_log": runtime_log,
         "heartbeat_mtime": heartbeat_mtime,
         "test_signal": test_signal,
         "report_mtime": report_mtime,
@@ -1995,6 +2084,7 @@ def evaluate_scope(
         "deferred_reason": deferred_reason,
         "stalled_count": stalled_count,
         "lock": lock,
+        "fallback_log_path": roster_entry.get("fallback_log_path"),
         "key_alias": key_assignment.get("alias"),
         "key_available": key_assignment.get("available"),
         "actions": actions,
@@ -2016,6 +2106,9 @@ def refresh_scope_runtime(
     current_head = run_git(root / repo, ["rev-parse", "--short", "HEAD"]) or ""
     latest_log = latest_log_path(root, scope_id)
     log = log_status(latest_log)
+    fallback_log_path = scope_state.get("fallback_log_path") if isinstance(scope_state.get("fallback_log_path"), str) else ""
+    runtime_log_path = Path(fallback_log_path) if fallback_log_path else latest_log
+    runtime_log = log_status(runtime_log_path)
     log_mtime = latest_log.stat().st_mtime if latest_log and latest_log.exists() else None
     heartbeat_mtime = scope_heartbeat_mtime(root, scope_id)
     test_signal = scope_test_signal(root, scope_id, repo)
@@ -2046,9 +2139,13 @@ def refresh_scope_runtime(
         stalled_count = 0 if progress else int(previous_scope.get("stalled_count", scope_state.get("stalled_count", 0)) or 0) + 1
 
     lock = lock_status(lock_path(root, scope_id), now)
-    recent_launch_failed = bool(lock.get("dead_unfinished"))
+    recent_launch_failed = bool(lock.get("dead_unfinished") or log_finished_with_failure(runtime_log))
     if lock.get("alive") and not log_has_useful_output(log):
-        recent_launch_failed = True
+        recent_launch_failed = False
+
+    status = scope_state.get("status", "unknown")
+    if not lock.get("alive") and runtime_log.get("exited") and status in {"started", "running", "active"}:
+        status = "completed" if runtime_log.get("exit_status") == 0 else "failed"
 
     refreshed = dict(scope_state)
     refreshed.update(
@@ -2059,6 +2156,8 @@ def refresh_scope_runtime(
             "log_mtime": log_mtime,
             "log_useful_hash": log.get("useful_hash"),
             "log": log,
+            "runtime_log_path": str(runtime_log_path) if runtime_log_path else None,
+            "runtime_log": runtime_log,
             "heartbeat_mtime": heartbeat_mtime,
             "test_signal": test_signal,
             "report_mtime": report_mtime,
@@ -2084,6 +2183,7 @@ def refresh_scope_runtime(
             "recent_launch_failed": recent_launch_failed,
             "stalled_count": stalled_count,
             "lock": lock,
+            "status": status,
             "resampled_at": iso(now),
         }
     )
