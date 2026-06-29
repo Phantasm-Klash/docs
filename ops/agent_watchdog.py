@@ -468,17 +468,33 @@ def repo_has_foreign_active_work(root: Path, repo_name: str, scope_id: str, repo
     repo = repos.get(repo_name) if isinstance(repos.get(repo_name), dict) else {}
     branch = str(repo.get("branch", ""))
     dirty_count = int(repo.get("dirty_count", 0) or 0)
-    if dirty_count <= 0:
-        return False, ""
     if repo_name == "docs" and scope_id in {"change-describer", "plan-auditor"}:
         return False, ""
     if branch.startswith(f"agent/{scope_id}/"):
         return False, ""
+    if branch.startswith("agent/") and not branch.startswith(f"agent/{scope_id}/"):
+        return True, f"{repo_name} is on branch {branch} owned by another scope; defer {scope_id}"
+    if branch.startswith("fix/"):
+        return True, f"{repo_name} is on bugfix branch {branch}; defer normal scope {scope_id}"
+    if dirty_count <= 0:
+        return False, ""
     if branch.startswith("fix/"):
         return True, f"{repo_name} is on dirty bugfix branch {branch}; defer normal scope {scope_id}"
-    if branch.startswith("agent/") and not branch.startswith(f"agent/{scope_id}/"):
-        return True, f"{repo_name} is on dirty branch {branch} owned by another scope; defer {scope_id}"
     return True, f"{repo_name} has uncommitted work on {branch}; defer {scope_id}"
+
+
+def scope_ids_for_repo(repo_name: str) -> list[str]:
+    return [scope_id for scope_id, scope in DEFAULT_SCOPES.items() if scope.get("repo") == repo_name]
+
+
+def repo_has_active_scope_lock(root: Path, repo_name: str, scope_id: str, now: dt.datetime) -> tuple[bool, str]:
+    for other_scope_id in scope_ids_for_repo(repo_name):
+        if other_scope_id == scope_id:
+            continue
+        status = lock_status(lock_path(root, other_scope_id), now)
+        if status.get("alive"):
+            return True, f"{repo_name} has active scope lock {other_scope_id}; defer {scope_id}"
+    return False, ""
 
 
 def collect_manager(root: Path, now: dt.datetime, stale_minutes: int) -> dict[str, Any]:
@@ -1640,6 +1656,11 @@ def evaluate_scope(
         deferred = True
         deferred_reason = foreign_reason
         actions.append({"type": "scope-deferred", "scope": scope_id, "repo": repo, "reason": foreign_reason})
+    has_active_repo_lock, active_repo_lock_reason = repo_has_active_scope_lock(root, repo, scope_id, now)
+    if has_active_repo_lock:
+        deferred = True
+        deferred_reason = active_repo_lock_reason
+        actions.append({"type": "scope-deferred", "scope": scope_id, "repo": repo, "reason": active_repo_lock_reason})
     lock_file = lock_path(root, scope_id)
     lock = lock_status(lock_file, now)
     cleanup_action = cleanup_dead_lock(lock_file, lock, dry_run=dry_run)
