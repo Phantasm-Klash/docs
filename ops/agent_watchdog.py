@@ -29,6 +29,8 @@ DEFAULT_GH_PROXY = "socks5://10.10.10.108:10808"
 GOAL_MODE = "codex-/goal-active"
 GITHUB_ORG = "Phantasm-Klash"
 UTC = dt.timezone.utc
+ACTIVE_STARTED_ONLY_STALL_SECONDS = 10 * 60
+ACTIVE_NO_PROGRESS_STALL_SECONDS = 20 * 60
 
 KEY_ALIAS_PREFERENCES: dict[str, tuple[str, ...]] = {
     "spellkard-bullet": ("spellkard-bullet", "spellkard", "other"),
@@ -57,7 +59,8 @@ GIT_FLOW_PROMPT = """版本控制和 PR 流程：
 - watchdog 查出的代码回归必须开独立 `fix/<area>` 分支和 PR，测试通过后请求合并；若分支保护阻止合并，写入状态和邮件，不得假报已合并。
 - PR 审批前必须读 PR diff、相关 docs/dev 路线和测试结果；审批不等于自动合并。
 - 每次最终状态和邮件必须来自补救动作后的最新采样；不能把启动前的旧 lock/unit/PR 状态当作最终状态。
-- 连续样本无 commit、无 scoped diff、无有效日志、无 report/final 状态更新、无 scope 专属 heartbeat 或测试指纹变化的 agent 算停滞；只有 `[watchdog] started` 的日志不能算正常运行。
+- 连续样本无 scope 路径 commit 指纹、scoped diff、有效日志、report/final 状态更新、scope 专属 heartbeat 或测试指纹变化的 agent 算停滞；同仓其他 scope 的 repo HEAD 变化不能算本 scope 进展，只有 `[watchdog] started` 的日志不能算正常运行。
+- systemd fallback runner 会固定 `HOME=/root`、`XDG_CONFIG_HOME=/root/.config`、`GH_CONFIG_DIR=/root/.config/gh`，继承 GitHub CLI credential helper，并设置 GitHub socks 代理；如果推送或 PR 创建仍失败，必须写入 final log 和邮件风险，不得假报完成。
 - `codex exec` fallback 是按轮次完成后退出的执行器，不是常驻 daemon；日志出现 `[watchdog] exited status=0` 且 systemd unit 不活跃时，应记录为 completed/idle，不能继续显示 started/running。非零退出必须记录 failed 并进入补救判断。
 - 不得把全局 manager heartbeat 或整点全局 regression 文件 mtime 当作某个 scope 的推进信号。
 """
@@ -196,6 +199,7 @@ def command_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("HOME", "/root")
     env.setdefault("XDG_CONFIG_HOME", "/root/.config")
+    env.setdefault("GH_CONFIG_DIR", "/root/.config/gh")
     env.setdefault("GOCACHE", "/root/.cache/go-build")
     env.setdefault("GOPATH", "/root/go")
     if extra:
@@ -456,6 +460,44 @@ def collect_repo(root: Path, repo_name: str, now: dt.datetime) -> dict[str, Any]
         "commits_last_hour": commits.splitlines() if commits else [],
         "collected_at": iso(now),
     }
+
+
+def scoped_head_fingerprint(root: Path, scope: dict[str, Any]) -> dict[str, Any]:
+    repo = root / str(scope["repo"])
+    paths = [str(path) for path in scope.get("paths", ())]
+    repo_head = run_git(repo, ["rev-parse", "--short", "HEAD"]) or ""
+    if not paths:
+        return {
+            "head": repo_head,
+            "repo_head": repo_head,
+            "commit": repo_head,
+            "fingerprint": repo_head,
+            "paths": [],
+            "source": "repo-head-no-scope-paths",
+        }
+
+    latest_commit = run_git(repo, ["log", "-1", "--format=%H", "--", *paths])
+    latest_short = run_git(repo, ["log", "-1", "--format=%h", "--", *paths])
+    tree_state = run_git(repo, ["ls-tree", "-r", "HEAD", "--", *paths], timeout=30)
+    fingerprint_payload = "\n".join([latest_commit, tree_state])
+    fingerprint = sha256_text(fingerprint_payload)
+    return {
+        "head": latest_short or latest_commit[:12] or repo_head,
+        "repo_head": repo_head,
+        "commit": latest_commit,
+        "fingerprint": fingerprint,
+        "paths": paths,
+        "source": "scoped-paths",
+    }
+
+
+def scoped_commit_progress(previous: dict[str, Any] | None, previous_scope: dict[str, Any], current_head: str, current_fingerprint: str) -> bool:
+    if previous is None:
+        return True
+    previous_fingerprint = previous_scope.get("head_fingerprint")
+    if previous_fingerprint:
+        return current_fingerprint != previous_fingerprint
+    return current_head != previous_scope.get("head")
 
 
 def collect_pr_list(root: Path, repo_name: str, state: str, now: dt.datetime, limit: int = 20) -> dict[str, Any]:
@@ -1053,6 +1095,23 @@ def log_finished_with_failure(log: dict[str, Any]) -> bool:
     return bool(log.get("exited") and log.get("exit_status") != 0)
 
 
+def active_lock_stall_reason(lock: dict[str, Any], log: dict[str, Any], progress: bool) -> str:
+    if not lock.get("alive"):
+        return ""
+    age_seconds = int(lock.get("age_seconds", 0) or 0)
+    if log.get("started_only") and age_seconds >= ACTIVE_STARTED_ONLY_STALL_SECONDS:
+        return f"active lock has only watchdog started output for {age_seconds} seconds"
+    if not log_has_useful_output(log) and age_seconds >= ACTIVE_NO_PROGRESS_STALL_SECONDS:
+        return f"active lock has no useful output for {age_seconds} seconds"
+    if not progress and age_seconds >= ACTIVE_NO_PROGRESS_STALL_SECONDS:
+        return f"active lock has no scoped progress for {age_seconds} seconds"
+    return ""
+
+
+def shell_export_line(name: str, value: str) -> str:
+    return f"export {name}={shlex.quote(value)}"
+
+
 def runtime_log_for_roster(roster_entry: dict[str, Any], latest_log: Path | None) -> tuple[dict[str, Any], Path | None]:
     fallback_log_path = roster_entry.get("fallback_log_path")
     if isinstance(fallback_log_path, str) and fallback_log_path:
@@ -1152,6 +1211,9 @@ def scope_risk_reason(scope_id: str, scope: dict[str, Any]) -> str:
         reasons.append("本轮没有 scoped diff、commit、scope heartbeat 或测试指纹变化")
     if scope.get("recent_launch_failed"):
         reasons.append("上次补救启动未产生有效输出")
+    active_stall_reason = (scope.get("stall_signals") or {}).get("active_stall_reason")
+    if active_stall_reason:
+        reasons.append(str(active_stall_reason))
     if not reasons:
         return ""
     return f"{scope_id}: " + "；".join(reasons)
@@ -1268,6 +1330,8 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
         "",
         f"- watchdog 已采样 manager、agent、仓库、PR、Godot Linux、Docker 和 docker-compose 状态，采样时间 {summary.get('generated_at', '')}。",
         f"- docs/ops 当前策略要求 feature branch、阶段性 commit、PR 审批流程，不再默认直接推 main。",
+        "- agent 停滞判定已使用 scope 路径 commit 指纹，不再把同仓其他 scope 的 repo HEAD 变化误算为本 scope 进展。",
+        "- fallback runner 已固定 `/root` GitHub CLI 配置、credential helper、socks 代理和 Go cache；worker 本地提交后应直接推分支并开 PR。",
         f"- Godot Linux: `{godot.get('path', DEFAULT_GODOT_LINUX)}`，exists={godot.get('exists')}，executable={godot.get('executable')}，version={godot.get('version', '')}。",
         f"- Docker: available={docker.get('available')}，docker-compose={docker.get('docker_compose_available')}，version={docker.get('docker_compose_version', '')}。",
         f"- 当前 open PR 总数: {'unknown' if pr_sample_failures else open_pr_count}；PR 审批动作数: {sum(1 for action in actions if str(action.get('type', '')).startswith('pr-'))}。",
@@ -1398,6 +1462,8 @@ def build_builtin_plan_audit(summary: dict[str, Any]) -> str:
             "",
             "- watchdog 已采样 branch/PR、agent、Godot Linux、Docker 和 `docker-compose` 状态，邮件摘要可直接读取本轮最新报告。",
             "- worker prompt 已纳入 feature branch、阶段性 commit、PR、Linux Godot headless、服务端 Docker/`docker-compose` 回归要求。",
+            "- watchdog 停滞检测已改为 scope 路径 commit 指纹，避免同仓其他 scope 提交掩盖本 scope 停滞。",
+            "- fallback runner 已固定 HOME/XDG/GH_CONFIG_DIR、GitHub socks 代理和 credential helper 环境，worker 应可直接推分支、开 PR，并在失败时写入 final log。",
             "- PR 审批被定义为受控动作：读取代码和 docs/dev 路线、运行对应检查、确认无阻塞后才 `gh pr review --approve`；不自动合并。",
             "- 最近 main 提交会结合 GitHub merged PR 采样判断，避免把刚通过 PR 合入的提交误报为直接推 main。",
             "",
@@ -1645,6 +1711,7 @@ Implementation requirements:
 - Gensoulkyo and PhK-BattleServer scopes should prefer Docker/`docker-compose` regression where repository files exist; if no Dockerfile/compose exists, run local checks and record that Docker coverage is blocked.
 - For network/protocol/server scopes, run `/root/gotouhou/docs/ops/protocol_audit_check.py`.
 - Push the feature branch and create a PR. Do not push directly to `main` unless the manager explicitly authorizes an emergency hotfix.
+- Use the inherited GitHub CLI auth and proxy from the fallback runner. If `git push` or `gh pr create` fails, write the exact non-secret blocker to your final status; do not remain running after a local commit with no PR.
 - If watchdog/regression reveals a code failure in your scope, switch to a dedicated `fix/<area>` branch/PR first; after tests pass, request merge and report any branch protection blocker.
 - Write a concise final status to `/root/gotouhou/.agents/logs/{scope_id}-final.md`.
 """
@@ -1741,6 +1808,9 @@ If a scope is missing, blocked, or stale, launch a scoped worker or continue the
 work directly without reverting unrelated edits. Keep `/root/gotouhou/.agents`
 updated. Use branch + PR flow for repository changes; do not directly push main
 except for explicit emergency hotfixes authorized by the manager.
+If a worker has a local commit but push/PR failed, treat it as publish-blocked,
+not running: stop stale units, clear the scope lock, publish with available
+manager credentials, and record the action in the next watchdog/mail snapshot.
 
 If watchdog regression finds code failures, create or monitor a dedicated
 bugfix branch/PR. Once tests pass, read the PR diff and related docs/dev route,
@@ -1841,6 +1911,19 @@ def start_background_codex(
             "set -u",
             f"KEY_FILE={shlex.quote(str(Path(DEFAULT_KEY_FILE)))}",
             f"KEY_ALIAS={shlex.quote(str(key_alias or ''))}",
+            shell_export_line("HOME", "/root"),
+            shell_export_line("XDG_CONFIG_HOME", "/root/.config"),
+            shell_export_line("GH_CONFIG_DIR", "/root/.config/gh"),
+            shell_export_line("GOCACHE", "/root/.cache/go-build"),
+            shell_export_line("GOPATH", "/root/go"),
+            shell_export_line("HTTPS_PROXY", DEFAULT_GH_PROXY),
+            shell_export_line("HTTP_PROXY", DEFAULT_GH_PROXY),
+            shell_export_line("ALL_PROXY", DEFAULT_GH_PROXY),
+            shell_export_line("https_proxy", DEFAULT_GH_PROXY),
+            shell_export_line("http_proxy", DEFAULT_GH_PROXY),
+            shell_export_line("all_proxy", DEFAULT_GH_PROXY),
+            "git config --global credential.https://github.com.helper '!/usr/bin/gh auth git-credential' >/dev/null 2>&1 || true",
+            "/usr/bin/gh auth setup-git >/dev/null 2>&1 || true",
             "KEY_VALUE=$(/usr/bin/python3 - \"$KEY_FILE\" \"$KEY_ALIAS\" <<'PY'",
             "import sys",
             "key_file, wanted = sys.argv[1], sys.argv[2]",
@@ -1960,6 +2043,7 @@ def evaluate_scope(
     scope: dict[str, Any],
     roster_entry: dict[str, Any],
     previous: dict[str, Any] | None,
+    risk_previous: dict[str, Any] | None,
     now: dt.datetime,
     stalled_samples: int,
     same_hour: bool,
@@ -1971,7 +2055,10 @@ def evaluate_scope(
 ) -> dict[str, Any]:
     scoped_text, diff_hash = scoped_status(root, scope)
     repo = str(scope["repo"])
-    current_head = run_git(root / repo, ["rev-parse", "--short", "HEAD"]) or ""
+    head_state = scoped_head_fingerprint(root, scope)
+    current_head = str(head_state.get("head", ""))
+    current_head_fingerprint = str(head_state.get("fingerprint", ""))
+    repo_head = str(head_state.get("repo_head", ""))
     latest_log = latest_log_path(root, scope_id)
     log = log_status(latest_log)
     runtime_log, runtime_log_path = runtime_log_for_roster(roster_entry, latest_log)
@@ -1979,7 +2066,7 @@ def evaluate_scope(
     heartbeat_mtime = scope_heartbeat_mtime(root, scope_id)
     test_signal = scope_test_signal(root, scope_id, repo)
     previous_scope = ((previous or {}).get("scopes") or {}).get(scope_id, {})
-    previous_repo = ((previous or {}).get("repos") or {}).get(repo, {})
+    risk_previous_scope = ((risk_previous or {}).get("scopes") or {}).get(scope_id, {})
 
     record_exists = bool(
         roster_entry.get("status") in {"running", "active", "completed", "started"}
@@ -2013,10 +2100,12 @@ def evaluate_scope(
         roster_entry["last_failure_reason"] = cleanup_action.get("reason")
     reconcile_roster_exit_status(roster_entry, current_head=current_head, lock=lock, runtime_log=runtime_log, now=now)
 
+    observed_log = lock.get("log") if lock.get("alive") and isinstance(lock.get("log"), dict) and lock["log"].get("exists") else log
     previous_log_hash = previous_scope.get("log_useful_hash")
-    commit_progress = bool(previous is None or current_head != previous_repo.get("head"))
+    previous_fingerprint = previous_scope.get("head_fingerprint") or previous_scope.get("head")
+    commit_progress = scoped_commit_progress(previous, previous_scope, current_head, current_head_fingerprint)
     diff_progress = bool(previous is None or diff_hash != previous_scope.get("diff_hash"))
-    log_progress = bool(log.get("useful_hash") and log.get("useful_hash") != previous_log_hash)
+    log_progress = bool(observed_log.get("useful_hash") and observed_log.get("useful_hash") != previous_log_hash)
     heartbeat_progress = bool(heartbeat_mtime is not None and heartbeat_mtime != previous_scope.get("heartbeat_mtime"))
     test_log_progress = bool(test_signal and test_signal != previous_scope.get("test_signal"))
     progress = bool(commit_progress or diff_progress or log_progress or heartbeat_progress or test_log_progress)
@@ -2037,12 +2126,17 @@ def evaluate_scope(
     if recent_launch_failed:
         progress = False
 
-    if same_hour:
-        stalled_count = int(previous_scope.get("stalled_count", 0))
-    else:
-        stalled_count = 0 if progress else int(previous_scope.get("stalled_count", 0)) + 1
+    previous_stalled_count = max(
+        int(previous_scope.get("stalled_count", 0) or 0),
+        int(risk_previous_scope.get("stalled_count", 0) or 0),
+    )
+    stalled_count = previous_stalled_count if progress and same_hour else (0 if progress else previous_stalled_count + 1)
 
-    active_stalled = bool(lock.get("alive") and not progress and stalled_count >= stalled_samples)
+    active_stall_reason = active_lock_stall_reason(lock, observed_log, progress)
+    if active_stall_reason:
+        recent_launch_failed = True
+
+    active_stalled = bool(lock.get("alive") and (active_stall_reason or (not progress and stalled_count >= stalled_samples)))
     action_reason = ""
     should_start = False
     completed = roster_entry.get("status") == "completed"
@@ -2052,7 +2146,7 @@ def evaluate_scope(
     if deferred:
         should_start = False
     elif active_stalled:
-        action_reason = f"active agent stalled for {stalled_count} samples"
+        action_reason = active_stall_reason or f"active agent stalled for {stalled_count} samples"
         stop_action = stop_stalled_lock(lock_file, lock, action_reason, dry_run=dry_run)
         actions.append(stop_action)
         lock = lock_status(lock_file, now)
@@ -2112,11 +2206,16 @@ def evaluate_scope(
         "status": roster_entry.get("status", "unknown"),
         "record_exists": record_exists,
         "head": current_head,
+        "repo_head": repo_head,
+        "head_commit": head_state.get("commit"),
+        "head_fingerprint": current_head_fingerprint,
+        "head_source": head_state.get("source"),
         "diff_hash": diff_hash,
         "scoped_dirty": scoped_text.splitlines()[:20],
         "log_mtime": log_mtime,
-        "log_useful_hash": log.get("useful_hash"),
-        "log": log,
+        "log_useful_hash": observed_log.get("useful_hash"),
+        "log": observed_log,
+        "latest_log": log,
         "runtime_log_path": str(runtime_log_path) if runtime_log_path else None,
         "runtime_log": runtime_log,
         "heartbeat_mtime": heartbeat_mtime,
@@ -2139,8 +2238,9 @@ def evaluate_scope(
             "no_scoped_diff": not diff_progress,
             "no_heartbeat": not heartbeat_progress,
             "no_test_log": not test_log_progress,
-            "no_useful_log": not log_has_useful_output(log),
+            "no_useful_log": not log_has_useful_output(observed_log),
             "report_not_updated": report_expected and not report_updated,
+            "active_stall_reason": active_stall_reason,
         },
         "recent_launch_failed": recent_launch_failed,
         "deferred": deferred,
@@ -2161,12 +2261,16 @@ def refresh_scope_runtime(
     scope: dict[str, Any],
     scope_state: dict[str, Any],
     previous: dict[str, Any] | None,
+    risk_previous: dict[str, Any] | None,
     now: dt.datetime,
     same_hour: bool,
 ) -> dict[str, Any]:
     repo = str(scope["repo"])
     scoped_text, diff_hash = scoped_status(root, scope)
-    current_head = run_git(root / repo, ["rev-parse", "--short", "HEAD"]) or ""
+    head_state = scoped_head_fingerprint(root, scope)
+    current_head = str(head_state.get("head", ""))
+    current_head_fingerprint = str(head_state.get("fingerprint", ""))
+    repo_head = str(head_state.get("repo_head", ""))
     latest_log = latest_log_path(root, scope_id)
     log = log_status(latest_log)
     fallback_log_path = scope_state.get("fallback_log_path") if isinstance(scope_state.get("fallback_log_path"), str) else ""
@@ -2176,12 +2280,15 @@ def refresh_scope_runtime(
     heartbeat_mtime = scope_heartbeat_mtime(root, scope_id)
     test_signal = scope_test_signal(root, scope_id, repo)
     previous_scope = ((previous or {}).get("scopes") or {}).get(scope_id, {})
-    previous_repo = ((previous or {}).get("repos") or {}).get(repo, {})
+    risk_previous_scope = ((risk_previous or {}).get("scopes") or {}).get(scope_id, {})
     previous_log_hash = previous_scope.get("log_useful_hash")
+    lock = lock_status(lock_path(root, scope_id), now)
+    observed_log = lock.get("log") if lock.get("alive") and isinstance(lock.get("log"), dict) and lock["log"].get("exists") else log
 
-    commit_progress = bool(previous is None or current_head != previous_repo.get("head"))
+    previous_fingerprint = previous_scope.get("head_fingerprint") or previous_scope.get("head")
+    commit_progress = scoped_commit_progress(previous, previous_scope, current_head, current_head_fingerprint)
     diff_progress = bool(previous is None or diff_hash != previous_scope.get("diff_hash"))
-    log_progress = bool(log.get("useful_hash") and log.get("useful_hash") != previous_log_hash)
+    log_progress = bool(observed_log.get("useful_hash") and observed_log.get("useful_hash") != previous_log_hash)
     heartbeat_progress = bool(heartbeat_mtime is not None and heartbeat_mtime != previous_scope.get("heartbeat_mtime"))
     test_log_progress = bool(test_signal and test_signal != previous_scope.get("test_signal"))
     progress = bool(commit_progress or diff_progress or log_progress or heartbeat_progress or test_log_progress)
@@ -2196,15 +2303,17 @@ def refresh_scope_runtime(
     else:
         report_mtime = None
 
-    if same_hour:
-        stalled_count = int(previous_scope.get("stalled_count", scope_state.get("stalled_count", 0)) or 0)
-    else:
-        stalled_count = 0 if progress else int(previous_scope.get("stalled_count", scope_state.get("stalled_count", 0)) or 0) + 1
+    previous_stalled_count = max(
+        int(previous_scope.get("stalled_count", scope_state.get("stalled_count", 0)) or 0),
+        int(risk_previous_scope.get("stalled_count", 0) or 0),
+        int(scope_state.get("stalled_count", 0) or 0),
+    )
+    stalled_count = previous_stalled_count if progress and same_hour else (0 if progress else previous_stalled_count + 1)
 
-    lock = lock_status(lock_path(root, scope_id), now)
     recent_launch_failed = bool(lock.get("dead_unfinished") or log_finished_with_failure(runtime_log))
-    if lock.get("alive") and not log_has_useful_output(log):
-        recent_launch_failed = False
+    active_stall_reason = active_lock_stall_reason(lock, observed_log, progress)
+    if active_stall_reason:
+        recent_launch_failed = True
 
     status = scope_state.get("status", "unknown")
     if not lock.get("alive") and runtime_log.get("exited") and status in {"started", "running", "active"}:
@@ -2214,11 +2323,16 @@ def refresh_scope_runtime(
     refreshed.update(
         {
             "head": current_head,
+            "repo_head": repo_head,
+            "head_commit": head_state.get("commit"),
+            "head_fingerprint": current_head_fingerprint,
+            "head_source": head_state.get("source"),
             "diff_hash": diff_hash,
             "scoped_dirty": scoped_text.splitlines()[:20],
             "log_mtime": log_mtime,
-            "log_useful_hash": log.get("useful_hash"),
-            "log": log,
+            "log_useful_hash": observed_log.get("useful_hash"),
+            "log": observed_log,
+            "latest_log": log,
             "runtime_log_path": str(runtime_log_path) if runtime_log_path else None,
             "runtime_log": runtime_log,
             "heartbeat_mtime": heartbeat_mtime,
@@ -2240,8 +2354,9 @@ def refresh_scope_runtime(
                 "no_scoped_diff": not diff_progress,
                 "no_heartbeat": not heartbeat_progress,
                 "no_test_log": not test_log_progress,
-                "no_useful_log": not log_has_useful_output(log),
+                "no_useful_log": not log_has_useful_output(observed_log),
                 "report_not_updated": report_expected and not report_updated,
+                "active_stall_reason": active_stall_reason,
             },
             "recent_launch_failed": recent_launch_failed,
             "stalled_count": stalled_count,
@@ -2397,6 +2512,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     key_assignments["bugfix-spellkard-godot-headless"] = select_key_alias("bugfix-spellkard-godot-headless", keyring)
     latest_snapshot = load_previous_snapshot(snapshot_dir)
     previous = load_previous_distinct_snapshot(snapshot_dir, current_bucket) or latest_snapshot
+    risk_previous = latest_snapshot
     same_hour = bool(latest_snapshot and snapshot_bucket(latest_snapshot) == current_bucket)
     repos = {name: collect_repo(root, name, now) for name in DEFAULT_REPOS}
     manager = collect_manager(root, now, args.manager_stale_minutes)
@@ -2426,6 +2542,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             scope=scope,
             roster_entry=entry,
             previous=previous,
+            risk_previous=risk_previous,
             now=now,
             stalled_samples=args.stalled_samples,
             same_hour=same_hour,
@@ -2478,6 +2595,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
                 scope=scope,
                 scope_state=initial_scopes[scope_id],
                 previous=previous,
+                risk_previous=risk_previous,
                 now=resample_now,
                 same_hour=same_hour,
             )
@@ -2530,6 +2648,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
                 scope=scope,
                 scope_state=summary["scopes"][scope_id],
                 previous=previous,
+                risk_previous=risk_previous,
                 now=report_sample_now,
                 same_hour=same_hour,
             )
