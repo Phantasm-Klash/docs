@@ -109,6 +109,7 @@ DEFAULT_SCOPES: dict[str, dict[str, Any]] = {
         "nickname": "Mendel",
         "agent_id": "019f0e84-8d8d-7510-be5e-abd7c4dd2b16",
         "repo": "SpellKard",
+        "continuous": True,
         "paths": (
             "dev/progress.md",
             "godot/scripts/boss_pattern_catalog.gd",
@@ -127,6 +128,7 @@ DEFAULT_SCOPES: dict[str, dict[str, Any]] = {
         "nickname": "Copernicus",
         "agent_id": "019f0e84-d497-7473-994d-d1842963266a",
         "repo": "SpellKard",
+        "continuous": True,
         "paths": (
             "dev/progress.md",
             "godot/assets/asset_manifest.json",
@@ -146,6 +148,7 @@ DEFAULT_SCOPES: dict[str, dict[str, Any]] = {
         "nickname": "Pascal",
         "agent_id": "019f0e85-dc60-7151-b15c-3cd8715530f3",
         "repo": "Gensoulkyo",
+        "continuous": True,
         "paths": (
             "cmd/gensoulkyo_nakama",
             "dev/progress.md",
@@ -161,6 +164,7 @@ DEFAULT_SCOPES: dict[str, dict[str, Any]] = {
         "nickname": "Franklin",
         "agent_id": "019f0e86-2176-7da2-98bb-495334d778f2",
         "repo": "PhK-BattleServer",
+        "continuous": True,
         "paths": (
             "dev/progress.md",
             "Dockerfile",
@@ -958,8 +962,8 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
         "",
         "## Managed goal scopes",
         "",
-        "| Scope | Repo | Status | Key alias | Progress | Stalled | Head | Actions |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Scope | Repo | Status | Key alias | Continuous | Started hour | Continue due | Progress | Stalled | Head | Actions |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for scope_id, raw_scope in sorted(scopes.items()):
         scope = raw_scope if isinstance(raw_scope, dict) else {}
@@ -968,6 +972,9 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
             "| "
             f"{scope_id} | {scope.get('repo', '')} | {scope.get('status', '')} | "
             f"{key_assignment.get('alias') or '(missing)'} | "
+            f"{scope.get('continuous', '')} | "
+            f"{scope.get('started_this_hour', '')} | "
+            f"{scope.get('due_for_continuation', '')} | "
             f"{scope.get('progress', '')} | {scope.get('stalled_count', '')} | "
             f"{scope.get('head', '')} | {len(scope.get('actions', [])) if isinstance(scope.get('actions'), list) else 0} |"
         )
@@ -1023,7 +1030,8 @@ def write_manager_files(root: Path, summary: dict[str, Any], now: dt.datetime) -
             "## Continuous policies",
             "",
             "- Hourly progress mail runs `agent_watchdog.py` before `hourly_progress_mail.py --brief`.",
-            "- Missing scopes or stale manager heartbeat start a fallback `codex exec` worker.",
+            "- The four development scopes plus the two reporting scopes are continuous `/goal` scopes; once the hourly bucket changes, completed scopes are relaunched unless an active same-repo lock or foreign branch would make that unsafe.",
+            "- Missing scopes, stale manager heartbeat, failed launches, and due continuous scopes start a fallback `codex exec` worker.",
             "- Fallback prompts are written as Codex `/goal` sustained-target instructions.",
             "- Per-agent keys are injected through child process environment only; raw key values are never written to JSON, logs, mail, or git.",
             "- Scope stagnation uses the conservative two-sample rule.",
@@ -1379,6 +1387,21 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
     risk_lines: list[str] = []
     if summary.get("started_count", 0):
         risk_lines.append(f"- watchdog 本轮启动了 {summary.get('started_count')} 个 fallback/持续 agent，需要观察是否正常退出并清理 lock。")
+    continuous_waiting = [
+        scope_id
+        for scope_id, raw_scope in scopes.items()
+        if isinstance(raw_scope, dict)
+        and raw_scope.get("continuous")
+        and raw_scope.get("due_for_continuation")
+        and not raw_scope.get("deferred")
+        and not (raw_scope.get("lock") or {}).get("alive")
+    ]
+    if continuous_waiting:
+        risk_lines.append(
+            "- 以下持续 `/goal` scope 已到补位时间但本轮未启动，需要检查同小时限流或启动动作: "
+            + ", ".join(sorted(continuous_waiting))
+            + "。"
+        )
     stale_artifacts = [
         action
         for action in actions
@@ -1462,6 +1485,7 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
         f"- watchdog 已采样 manager、agent、仓库、PR、Godot Linux、Docker 和 docker-compose 状态，采样时间 {summary.get('generated_at', '')}。",
         f"- docs/ops 当前策略要求 feature branch、阶段性 commit、PR 审批流程，不再默认直接推 main。",
         "- agent 停滞判定已使用 scope 路径 commit 指纹，不再把同仓其他 scope 的 repo HEAD 变化误算为本 scope 进展。",
+        "- 四个开发 scope 与两个报告/审计 scope 均按持续 `/goal` scope 管理；每个新小时会补位拉起，若同仓有活动锁或外来分支则暂缓。",
         "- 历史漏检原因已定位：旧逻辑把同仓 repo HEAD、全局 heartbeat 和过宽的日志输出算作 scope 进展；现在只有 scope 路径提交、scoped diff、scope heartbeat、有效报告/测试/日志变化才算推进。",
         "- watchdog 发现回归失败时会按检查类型启动独立 bugfix agent：SpellKard headless、Gensoulkyo docker-compose、PhK-BattleServer docker-compose、跨仓协议审计分别走独立 fix 分支和 PR。",
         "- fallback runner 已固定 `/root` GitHub CLI 配置、credential helper、socks 代理和 Go cache；worker 本地提交后应直接推分支并开 PR。",
@@ -1477,7 +1501,8 @@ def build_builtin_change_summary(summary: dict[str, Any]) -> str:
         scope = raw_scope if isinstance(raw_scope, dict) else {}
         lines.append(
             f"- {scope_id}: status={scope.get('status')}，repo={scope.get('repo')}，"
-            f"progress={scope.get('progress')}，stalled={scope.get('stalled_count')}，"
+            f"continuous={scope.get('continuous')}，started_hour={scope.get('started_this_hour')}，"
+            f"continue_due={scope.get('due_for_continuation')}，progress={scope.get('progress')}，stalled={scope.get('stalled_count')}，"
             f"deferred={scope.get('deferred')}，lock_alive={(scope.get('lock') or {}).get('alive')}。"
         )
 
@@ -2303,6 +2328,7 @@ def evaluate_scope(
     continuous = bool(scope.get("continuous"))
     last_started = parse_iso(roster_entry.get("last_started_at") if isinstance(roster_entry.get("last_started_at"), str) else None)
     started_this_hour = bool(last_started and hour_bucket(last_started) == hour_bucket(now))
+    due_for_continuation = bool(continuous and not lock.get("alive") and not started_this_hour)
     if deferred:
         should_start = False
     elif active_stalled:
@@ -2326,7 +2352,7 @@ def evaluate_scope(
         started_this_hour = bool(last_started and hour_bucket(last_started) == hour_bucket(now))
         if not started_this_hour:
             should_start = True
-            action_reason = "scheduled hourly continuous scope"
+            action_reason = "scheduled hourly continuous /goal scope"
         elif not progress and stalled_count >= 1:
             should_start = True
             action_reason = "continuous scope produced no useful report update"
@@ -2358,6 +2384,8 @@ def evaluate_scope(
             roster_entry["last_start_reason"] = action_reason
             roster_entry["fallback_log_path"] = launch.get("log_path")
             roster_entry["key_alias"] = launch.get("key_alias")
+            started_this_hour = True
+            due_for_continuation = False
 
     return {
         "scope": scope_id,
@@ -2384,6 +2412,8 @@ def evaluate_scope(
         "report_expected": report_expected,
         "report_updated": report_updated,
         "last_seen_at": roster_entry.get("last_seen_at"),
+        "last_started_at": roster_entry.get("last_started_at"),
+        "last_start_reason": roster_entry.get("last_start_reason"),
         "progress": progress,
         "progress_signals": {
             "commit": commit_progress,
@@ -2410,6 +2440,9 @@ def evaluate_scope(
         "fallback_log_path": roster_entry.get("fallback_log_path"),
         "key_alias": key_assignment.get("alias"),
         "key_available": key_assignment.get("available"),
+        "continuous": continuous,
+        "started_this_hour": started_this_hour,
+        "due_for_continuation": due_for_continuation and not deferred,
         "actions": actions,
     }
 
@@ -2478,6 +2511,9 @@ def refresh_scope_runtime(
     status = scope_state.get("status", "unknown")
     if not lock.get("alive") and runtime_log.get("exited") and status in {"started", "running", "active"}:
         status = "completed" if runtime_log.get("exit_status") == 0 else "failed"
+    last_started = parse_iso(scope_state.get("last_started_at") if isinstance(scope_state.get("last_started_at"), str) else None)
+    started_this_hour = bool(last_started and hour_bucket(last_started) == hour_bucket(now))
+    continuous = bool(scope.get("continuous"))
 
     refreshed = dict(scope_state)
     refreshed.update(
@@ -2522,6 +2558,9 @@ def refresh_scope_runtime(
             "stalled_count": stalled_count,
             "lock": lock,
             "status": status,
+            "continuous": continuous,
+            "started_this_hour": started_this_hour,
+            "due_for_continuation": bool(continuous and not lock.get("alive") and not started_this_hour),
             "resampled_at": iso(now),
         }
     )
