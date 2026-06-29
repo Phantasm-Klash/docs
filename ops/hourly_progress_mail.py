@@ -71,9 +71,9 @@ def scope_risk_description(scope_id: str, scope: dict[str, object]) -> str:
         reasons.append("报告未更新")
     stalled_count = int(scope.get("stalled_count", 0) or 0)
     if stalled_count >= 2:
-        reasons.append("连续两次无 scoped diff/commit/heartbeat/test log")
+        reasons.append("连续两次无 scoped diff/commit/scope heartbeat/test signal")
     elif not scope.get("progress"):
-        reasons.append("本轮无 scoped diff/commit/heartbeat/test log")
+        reasons.append("本轮无 scoped diff/commit/scope heartbeat/test signal")
     if scope.get("recent_launch_failed"):
         reasons.append("上次补救无有效输出")
     if not reasons:

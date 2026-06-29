@@ -57,7 +57,8 @@ GIT_FLOW_PROMPT = """版本控制和 PR 流程：
 - watchdog 查出的代码回归必须开独立 `fix/<area>` 分支和 PR，测试通过后请求合并；若分支保护阻止合并，写入状态和邮件，不得假报已合并。
 - PR 审批前必须读 PR diff、相关 docs/dev 路线和测试结果；审批不等于自动合并。
 - 每次最终状态和邮件必须来自补救动作后的最新采样；不能把启动前的旧 lock/unit/PR 状态当作最终状态。
-- 连续样本无 commit、无 scoped diff、无有效日志、无 report/final 状态更新的 agent 算停滞；只有 `[watchdog] started` 的日志不能算正常运行。
+- 连续样本无 commit、无 scoped diff、无有效日志、无 report/final 状态更新、无 scope 专属 heartbeat 或测试指纹变化的 agent 算停滞；只有 `[watchdog] started` 的日志不能算正常运行。
+- 不得把全局 manager heartbeat 或整点全局 regression 文件 mtime 当作某个 scope 的推进信号。
 """
 
 
@@ -905,15 +906,62 @@ def latest_log_path(root: Path, scope_id: str) -> Path | None:
 
 def test_log_mtime(root: Path, scope_id: str, repo_name: str) -> float | None:
     agents_dir = root / ".agents"
-    candidates = [
-        agents_dir / "regression-last-run.log",
-        agents_dir / "checks" / "latest-regression.json",
-    ]
+    candidates: list[Path] = []
     logs_dir = agents_dir / "logs"
     if logs_dir.exists():
         for pattern in (f"{scope_id}*test*.log", f"{scope_id}*check*.log", f"{repo_name}*test*.log", f"{repo_name}*check*.log"):
             candidates.extend(path for path in logs_dir.glob(pattern) if path.is_file())
     return newest_file_mtime(candidates)
+
+
+def scope_heartbeat_mtime(root: Path, scope_id: str) -> float | None:
+    candidates = [
+        root / ".agents" / "heartbeats" / f"{scope_id}.json",
+        root / ".agents" / f"{scope_id}-heartbeat.json",
+    ]
+    return newest_file_mtime(candidates)
+
+
+def scope_check_names(scope_id: str, repo_name: str) -> tuple[str, ...]:
+    if scope_id == "spellkard-ui":
+        return ("spellkard-client-ui-headless",)
+    if scope_id == "spellkard-bullet":
+        return ("spellkard-boss-pattern-headless",)
+    if scope_id == "gensoulkyo-lobby":
+        return ("gensoulkyo-docker-compose", "cross-repo-protocol-audit")
+    if scope_id == "phk-battle-server":
+        return ("battle-server-docker-compose", "cross-repo-protocol-audit")
+    if repo_name == "PhK-Protocol":
+        return ("cross-repo-protocol-audit",)
+    return ()
+
+
+def scope_test_signal(root: Path, scope_id: str, repo_name: str) -> str:
+    parts: list[str] = []
+    mtime = test_log_mtime(root, scope_id, repo_name)
+    if mtime is not None:
+        parts.append(f"log_mtime={int(mtime)}")
+    regression = collect_regression(root)
+    checks = regression.get("checks") if isinstance(regression.get("checks"), list) else []
+    wanted_names = set(scope_check_names(scope_id, repo_name))
+    for raw_check in checks:
+        check = raw_check if isinstance(raw_check, dict) else {}
+        name = str(check.get("name", ""))
+        if name not in wanted_names:
+            continue
+        parts.append(
+            json.dumps(
+                {
+                    "name": name,
+                    "ok": check.get("ok"),
+                    "status": check.get("status"),
+                    "output_tail": check.get("output_tail", ""),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+    return sha256_text("\n".join(parts)) if parts else ""
 
 
 def log_status(path: Path | None) -> dict[str, Any]:
@@ -1018,9 +1066,9 @@ def scope_risk_reason(scope_id: str, scope: dict[str, Any]) -> str:
         reasons.append("受管报告 mtime 未更新")
     stalled_count = int(scope.get("stalled_count", 0) or 0)
     if stalled_count >= 2:
-        reasons.append("连续两次没有 scoped diff、commit、heartbeat 或测试日志变化")
+        reasons.append("连续两次没有 scoped diff、commit、scope heartbeat 或测试指纹变化")
     elif not scope.get("progress"):
-        reasons.append("本轮没有 scoped diff、commit、heartbeat 或测试日志变化")
+        reasons.append("本轮没有 scoped diff、commit、scope heartbeat 或测试指纹变化")
     if scope.get("recent_launch_failed"):
         reasons.append("上次补救启动未产生有效输出")
     if not reasons:
@@ -1270,7 +1318,7 @@ def managed_change_describer_prompt() -> str:
 
 摘要必须包含：更新前服务器状态、更新后服务器状态、本小时完成内容、Agent 状态、阻塞/风险、下一小时建议。
 
-必须写入风险：报告未更新、agent lock 残留或 started-only 日志、dead lock 被清理、未走 feature branch + PR、PR 采样失败、bugfix PR 被分支保护阻塞、Godot Linux headless 未跑、服务端 Docker/`docker-compose` 回归缺失、watchdog/邮件异常、key alias 缺失。服务器无显卡导致的纯 Godot 渲染器失败可以写为 ignored/blocked，不算功能失败；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败仍必须写为真实阻塞。不得泄露 SMTP 密码、token、私钥、API key 或任何凭据；可以写 key alias 和 scope，不能写 key value。只允许写 `.agents` 下指定报告和提示词，不修改 git 仓库，不提交，不推送。写报告必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
+必须写入风险：报告未更新、agent lock 残留或 started-only 日志、active 但无有效输出、dead lock 被清理、补救后未重采样、未走 feature branch + PR、PR 采样失败、bugfix PR 被分支保护阻塞、Godot Linux headless 未跑、服务端 Docker/`docker-compose` 回归缺失、watchdog/邮件异常、key alias 缺失。不得把全局 manager heartbeat 或全局 regression mtime 当成某个 agent 的推进。服务器无显卡导致的纯 Godot 渲染器失败可以写为 ignored/blocked，不算功能失败；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败仍必须写为真实阻塞。不得泄露 SMTP 密码、token、私钥、API key 或任何凭据；可以写 key alias 和 scope，不能写 key value。只允许写 `.agents` 下指定报告和提示词，不修改 git 仓库，不提交，不推送。写报告必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
 """
 
 
@@ -1281,7 +1329,7 @@ def managed_plan_auditor_prompt() -> str:
 
 每轮读取 `/root/gotouhou/docs/dev/progress.md` 与 `/root/gotouhou/docs/dev/gotouhou/**/*.md`，再检查五个子仓库状态、branch/PR 形态、最近提交、最新 watchdog summary、Godot Linux headless 能力、Docker/`docker-compose` 回归能力和 open PR。判断新增功能与开发流程是否符合 Phase 2/3/6/8、网络安全、Nakama、大厅/房间、C++ BattleServer、Godot UI/弹幕路线。
 
-必须审计：是否缺阶段性 commit、是否直接推 main、是否缺 PR、PR 是否读完代码和路线后再审批、watchdog 查出的代码问题是否开独立 bugfix 分支/PR、SpellKard 是否用 Linux Godot headless 验证、服务端是否使用 Docker/`docker-compose` 或记录缺口、邮件内容是否及时反映 agent 状态和阻塞风险。started-only 日志、dead lock、报告未更新都算 agent 未正常执行，不得当成正常运行。服务器无显卡导致的纯 Godot 渲染器失败可以忽略为环境 blocked；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败不能忽略。
+必须审计：是否缺阶段性 commit、是否直接推 main、是否缺 PR、PR 是否读完代码和路线后再审批、watchdog 查出的代码问题是否开独立 bugfix 分支/PR、SpellKard 是否用 Linux Godot headless 验证、服务端是否使用 Docker/`docker-compose` 或记录缺口、邮件内容是否及时反映 agent 状态和阻塞风险。补救动作后没有重采样、started-only 日志、active 但无有效输出、dead lock、报告未更新、用全局 manager heartbeat 或全局 regression mtime 掩盖 scope 停滞，都算 agent 未正常执行，不得当成正常运行。服务器无显卡导致的纯 Godot 渲染器失败可以忽略为环境 blocked；GDScript parse/compile/type error、脚本加载失败和 UI/弹幕合同失败不能忽略。
 
 输出 `/root/gotouhou/.agents/reports/plan-audit-latest.md`，同时更新本提示词文件。只允许写 `.agents` 下指定文件，不修改 git 仓库，不提交，不推送。不得泄露凭据。结论必须明确“符合/偏离/建议调整”，并给出可直接交给后续 worker 的中文提示词。写报告必须原子更新：先写同目录临时文件，再 rename 替换；禁止先删除或清空现有报告。
 """
@@ -1783,9 +1831,8 @@ def evaluate_scope(
     latest_log = latest_log_path(root, scope_id)
     log = log_status(latest_log)
     log_mtime = latest_log.stat().st_mtime if latest_log and latest_log.exists() else None
-    heartbeat_path = root / ".agents" / "manager-heartbeat.json"
-    heartbeat_mtime = heartbeat_path.stat().st_mtime if heartbeat_path.exists() else None
-    tests_mtime = test_log_mtime(root, scope_id, repo)
+    heartbeat_mtime = scope_heartbeat_mtime(root, scope_id)
+    test_signal = scope_test_signal(root, scope_id, repo)
     previous_scope = ((previous or {}).get("scopes") or {}).get(scope_id, {})
     previous_repo = ((previous or {}).get("repos") or {}).get(repo, {})
 
@@ -1821,7 +1868,7 @@ def evaluate_scope(
     diff_progress = bool(previous is None or diff_hash != previous_scope.get("diff_hash"))
     log_progress = bool(log.get("useful_hash") and log.get("useful_hash") != previous_log_hash)
     heartbeat_progress = bool(heartbeat_mtime is not None and heartbeat_mtime != previous_scope.get("heartbeat_mtime"))
-    test_log_progress = bool(tests_mtime is not None and tests_mtime != previous_scope.get("test_log_mtime"))
+    test_log_progress = bool(test_signal and test_signal != previous_scope.get("test_signal"))
     progress = bool(commit_progress or diff_progress or log_progress or heartbeat_progress or test_log_progress)
     scope_report_path = report_path(root, scope_id)
     report_expected = scope_report_path is not None
@@ -1921,7 +1968,7 @@ def evaluate_scope(
         "log_useful_hash": log.get("useful_hash"),
         "log": log,
         "heartbeat_mtime": heartbeat_mtime,
-        "test_log_mtime": tests_mtime,
+        "test_signal": test_signal,
         "report_mtime": report_mtime,
         "report_expected": report_expected,
         "report_updated": report_updated,
@@ -1970,9 +2017,8 @@ def refresh_scope_runtime(
     latest_log = latest_log_path(root, scope_id)
     log = log_status(latest_log)
     log_mtime = latest_log.stat().st_mtime if latest_log and latest_log.exists() else None
-    heartbeat_path = root / ".agents" / "manager-heartbeat.json"
-    heartbeat_mtime = heartbeat_path.stat().st_mtime if heartbeat_path.exists() else None
-    tests_mtime = test_log_mtime(root, scope_id, repo)
+    heartbeat_mtime = scope_heartbeat_mtime(root, scope_id)
+    test_signal = scope_test_signal(root, scope_id, repo)
     previous_scope = ((previous or {}).get("scopes") or {}).get(scope_id, {})
     previous_repo = ((previous or {}).get("repos") or {}).get(repo, {})
     previous_log_hash = previous_scope.get("log_useful_hash")
@@ -1981,7 +2027,7 @@ def refresh_scope_runtime(
     diff_progress = bool(previous is None or diff_hash != previous_scope.get("diff_hash"))
     log_progress = bool(log.get("useful_hash") and log.get("useful_hash") != previous_log_hash)
     heartbeat_progress = bool(heartbeat_mtime is not None and heartbeat_mtime != previous_scope.get("heartbeat_mtime"))
-    test_log_progress = bool(tests_mtime is not None and tests_mtime != previous_scope.get("test_log_mtime"))
+    test_log_progress = bool(test_signal and test_signal != previous_scope.get("test_signal"))
     progress = bool(commit_progress or diff_progress or log_progress or heartbeat_progress or test_log_progress)
     scope_report_path = report_path(root, scope_id)
     report_expected = scope_report_path is not None
@@ -2014,7 +2060,7 @@ def refresh_scope_runtime(
             "log_useful_hash": log.get("useful_hash"),
             "log": log,
             "heartbeat_mtime": heartbeat_mtime,
-            "test_log_mtime": tests_mtime,
+            "test_signal": test_signal,
             "report_mtime": report_mtime,
             "report_expected": report_expected,
             "report_updated": report_updated,
