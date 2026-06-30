@@ -309,11 +309,29 @@ Key alias：`{key_alias or "(missing)"}`
 def previous_next_action_prompt(agent_id: str, previous: dict[str, Any]) -> str:
     next_actions = previous.get("next_agent_actions") if isinstance(previous.get("next_agent_actions"), dict) else {}
     items = next_actions.get("items") if isinstance(next_actions.get("items"), list) else []
-    lines: list[str] = []
+    matching_items: list[dict[str, Any]] = []
     for raw_item in items:
         item = raw_item if isinstance(raw_item, dict) else {}
         if item.get("agent") != agent_id:
             continue
+        matching_items.append(item)
+
+    lines: list[str] = []
+    resource_items = [item for item in matching_items if item.get("category") == "resource_risk"]
+    work_items = [item for item in matching_items if item.get("category") != "resource_risk"]
+
+    for item in resource_items[:2]:
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        reasons = evidence.get("reasons") if isinstance(evidence.get("reasons"), list) else []
+        reason_text = ",".join(str(reason) for reason in reasons[:3])
+        reason_suffix = f" reasons={reason_text}" if reason_text else ""
+        lines.append(
+            "- "
+            f"resource_limit priority={item.get('priority')} severity={str(item.get('summary') or '').replace(agent_id + ' ', '')} "
+            f"repo={item.get('repo')} action={item.get('action')}{reason_suffix}"
+        )
+
+    for item in work_items:
         evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
         url = evidence.get("url")
         url_text = f" {url}" if url else ""
@@ -934,6 +952,20 @@ def write_personas(root: Path, agent_id: str, agent: dict[str, Any], workdir: Pa
 """,
     )
     return {"persona": str(persona_path), "prompt": str(prompt_path), "workspace": str(readme_path)}
+
+
+def refresh_personas_from_summary(root: Path, summary: dict[str, Any]) -> None:
+    """Refresh prompts with the just-built action queue when no new agent was started."""
+    agents = summary.get("agents") if isinstance(summary.get("agents"), dict) else {}
+    for agent_id, agent in AGENTS.items():
+        raw_state = agents.get(agent_id) if isinstance(agents.get(agent_id), dict) else {}
+        workdir = Path(str(raw_state.get("workdir") or root / str(agent.get("repo", ""))))
+        key_assignment = {
+            "alias": raw_state.get("key_alias"),
+            "available": raw_state.get("key_available"),
+            "preferences": agent.get("key_aliases", ()),
+        }
+        write_personas(root, agent_id, agent, workdir, key_assignment, summary)
 
 
 def should_start_agent(lock: dict[str, Any], log: dict[str, Any], force: bool, now: dt.datetime) -> tuple[bool, str]:
@@ -1682,6 +1714,8 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     if not args.dry_run:
         atomic_write_text(audit_path, audit_text)
         atomic_write_text(plan_path, audit_text)
+        if summary["started_count"] == 0:
+            refresh_personas_from_summary(root, summary)
     summary["reports"] = {
         "plan_audit": {
             "path": str(plan_path),
