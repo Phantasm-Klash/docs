@@ -365,6 +365,36 @@ def agent_resource_risk_lines(summary: dict[str, object], *, limit: int = 6) -> 
     return lines
 
 
+def repo_state_risk_lines(summary: dict[str, object], *, limit: int = 6) -> list[str]:
+    risk = summary.get("repo_state_risk") if isinstance(summary.get("repo_state_risk"), dict) else {}
+    if not risk:
+        return ["- 未读取到结构化仓库状态风险；详见仓库状态和 PR 行动队列。"]
+    lines = [
+        (
+            "- "
+            f"count={risk.get('count', 0)}；"
+            f"by_repo={risk.get('by_repo', {})}；"
+            f"by_owner={risk.get('by_owner_agent', {})}；"
+            f"by_category={risk.get('by_category', {})}"
+        )
+    ]
+    items = risk.get("top_items") if isinstance(risk.get("top_items"), list) else []
+    if not items:
+        lines.append("- 当前没有可展示的仓库状态风险项。")
+        return lines
+    for raw_item in items[:limit]:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        lines.append(
+            "- "
+            f"{item.get('owner_agent', 'unknown')} -> {item.get('repo', 'unknown')}："
+            f"priority={item.get('priority', 'unknown')}；"
+            f"{item.get('category', 'repo_state')}；"
+            f"{item.get('action', '')}；"
+            f"{item.get('summary', '')}"
+        )
+    return lines
+
+
 def next_agent_action_lines(summary: dict[str, object], *, limit: int = 8) -> list[str]:
     actions = summary.get("next_agent_actions") if isinstance(summary.get("next_agent_actions"), dict) else {}
     if not actions:
@@ -663,6 +693,9 @@ def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: 
         "",
         "Agent 资源风险:",
         *agent_resource_risk_lines(watchdog),
+        "",
+        "仓库状态风险:",
+        *repo_state_risk_lines(watchdog),
         "",
         "下一步行动:",
         *next_agent_action_lines(watchdog),
