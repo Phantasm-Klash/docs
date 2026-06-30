@@ -386,8 +386,8 @@ def collect_pull_requests(root: Path, now: dt.datetime) -> dict[str, Any]:
             items = []
         prs[name] = {
             "repo": name,
-            "open_count": len(items) if isinstance(items, list) else None,
-            "items": items if isinstance(items, list) else [],
+            "open_count": len(items) if code == 0 and isinstance(items, list) else None,
+            "items": items if code == 0 and isinstance(items, list) else [],
             "status": code,
             "collected_at": iso(now),
             "error": "" if code == 0 else output[-800:],
@@ -661,9 +661,21 @@ def build_audit_report(summary: dict[str, Any]) -> str:
         if isinstance(repo, dict) and int(repo.get("dirty_count", 0) or 0) > 0
     ]
     open_pr_count = 0
+    pr_failed_repos: list[str] = []
     for repo in pull_requests.values():
-        if isinstance(repo, dict) and isinstance(repo.get("open_count"), int):
+        if not isinstance(repo, dict):
+            continue
+        if isinstance(repo.get("open_count"), int):
             open_pr_count += int(repo["open_count"])
+        else:
+            pr_failed_repos.append(str(repo.get("repo") or "unknown"))
+    if pr_failed_repos:
+        pr_line = (
+            f"- 当前 open PR 数：未知（{len(pr_failed_repos)} 个仓库采集失败："
+            f"{'、'.join(pr_failed_repos[:10])}；已采集可见 open PR 数：{open_pr_count}）。"
+        )
+    else:
+        pr_line = f"- 当前 open PR 数：{open_pr_count}。"
 
     agent_lines = []
     for agent_id, raw_agent in sorted(agents.items()):
@@ -714,7 +726,7 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             "## Git 与版本风险",
             "",
             f"- 当前 dirty 仓库：{', '.join(dirty_repos) if dirty_repos else '无'}。",
-            f"- 当前 open PR 数：{open_pr_count}。",
+            pr_line,
             "- 新 agent 使用独立 worktree/工作目录，避免直接覆盖旧 agent 未提交内容；审计 agent 继续判断旧 dirty work 是否应整理成 PR 或废弃。",
             "- 简单线性改动可阶段性提交；跨仓、协议/网络/安全、回归修复和并行开发必须 branch + PR。",
             "",
