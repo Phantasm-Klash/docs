@@ -9,6 +9,7 @@
 - 当前 open PR 为 9 个：Gensoulkyo #22 与 PhK-BattleServer #18 为 `CLEAN` 且 checks 通过；SpellKard #13-#19 共 7 个仍为 stale group，其中 4 个 `DIRTY`、3 个 `BEHIND`。
 - #22/#18 虽然 merge-ready，但都触及服务端、战斗服、协议/网络/安全边界；project-manager #33 已把它们标成 review gate。下一步应人工读 diff、保留 protocol audit 证据后再合并，不能把 checks 全绿视为自动安全。
 - 最高版本流风险仍是 SpellKard：根仓 `main...origin/main [ahead 34]`，同时 7 个旧 PR 未收敛。client-agent 应先 fresh current-base PR 或明确 supersede/close 决策，再扩新 UI/Boss 功能。
+- 11:57 manager dry-run 采样到 client-agent 当前运行日志里 Godot `client_smoke_test.gd` 出现 GDScript parse error：`Expected statement, found "Indent" instead`。这不是无 GPU renderer 可忽略失败，必须由 client-agent 修复后再接受该客户端切片。
 - Gensoulkyo 根仓仍有旧 dirty 4：`cmd/gensoulkyo_nakama/README.md`、`module.go`、`module_source_test.go` 和新增 `module_nakama_test.go`。这些改动收紧 Nakama service-origin 回调上下文，属于安全边界，应由 nakama-server-agent 吸收、重建为 PR 或明确废弃，并跑 protocol audit。
 - 旧 agent 身份应继续冻结：`change-describer`、`gensoulkyo-lobby`、`phk-battle-server`、`plan-auditor`、`spellkard-bullet`、`spellkard-ui`。只迁移已验证且仍有价值的工作到五个 managed agents。
 
@@ -34,6 +35,7 @@
 ## 测试证据
 
 - 最新全局回归摘要：2026-06-30T09:00:24Z，`ok=true`、`failed=0`、`ignored=0`。
+- 最新 manager dry-run 不是全量回归，但其 runtime log tail 已看到 client-agent 的 Godot smoke parse error；这应视为当前客户端切片阻塞信号，而不是全局回归摘要已覆盖的历史通过状态。
 - Gensoulkyo #22 GitHub checks：`server-contract-tests` 与 `auto-merge` 通过；PR body 声明本地跑过 `go test ./runtime/... ./cmd/gensoulkyo_nakama`、`docker-compose --profile test run --rm test`、`protocol_audit_check.py`。
 - PhK-BattleServer #18 GitHub checks：`battle-server-checks` 与 `auto-merge` 通过；PR body 声明本地跑过 `python3 tools/check_battle_server.py`、`docker-compose run --rm test`、`protocol_audit_check.py`。
 - 本轮 audit-agent 只新增 docs 审计报告并更新 `.agents` 邮件正文，不改协议、网络、匹配、战斗服、鉴权或安全实现。
