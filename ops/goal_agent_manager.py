@@ -445,6 +445,12 @@ def repo_state_prompt_action(item: dict[str, Any]) -> str:
     if category == "local_behind":
         behind = evidence.get("behind")
         return f"先同步 {repo} {branch} behind={behind} 到最新 upstream，再选择新切片"
+    if category == "upstream_gone":
+        tracking = prompt_clip(evidence.get("tracking"), 96)
+        return (
+            f"先处理 {repo} {branch} 的 upstream gone（{tracking or 'tracking branch'} 已删除）："
+            "确认是否已合并，切回 main/owning branch 或重建当前分支后再继续"
+        )
     return str(item.get("action") or "inspect repository state")
 
 
@@ -459,6 +465,8 @@ def managed_worktree_action(agent_id: str, agent: dict[str, Any], category: str,
         "dirty": worktree_state.get("dirty"),
         "ahead": worktree_state.get("ahead"),
         "behind": worktree_state.get("behind"),
+        "tracking": worktree_state.get("tracking"),
+        "upstream_gone": worktree_state.get("upstream_gone"),
         "status": worktree_state.get("status"),
     }
     if category == "managed_worktree_dirty":
@@ -481,6 +489,17 @@ def managed_worktree_action(agent_id: str, agent: dict[str, Any], category: str,
             "category": category,
             "summary": f"{agent_id} managed worktree is ahead={ahead} on {branch}",
             "action": "先推送 ahead 提交并开/更新 PR，或写明无法推送原因；不要继续堆 only-local 提交",
+            "evidence": evidence,
+        }
+    if category == "managed_worktree_upstream_gone":
+        tracking = str(worktree_state.get("tracking") or "")
+        return {
+            "agent": agent_id,
+            "repo": repo,
+            "priority": 9,
+            "category": category,
+            "summary": f"{agent_id} managed worktree upstream is gone on {branch}",
+            "action": f"当前跟踪分支 {tracking or 'upstream'} 已删除；切回最新 origin/main 或 owning branch，确认已合并提交后再继续新切片",
             "evidence": evidence,
         }
     behind = int(worktree_state.get("behind", 0) or 0)
@@ -690,6 +709,7 @@ def collect_git_worktree_state(path: Path) -> dict[str, Any]:
         "behind": int(branch_info.get("behind", 0) or 0),
         "tracking": branch_info.get("tracking"),
         "diverged": bool(branch_info.get("diverged")),
+        "upstream_gone": bool(branch_info.get("upstream_gone")),
     }
 
 
@@ -719,6 +739,7 @@ def repo_status_branch_info(status: object) -> dict[str, Any]:
         "ahead": 0,
         "behind": 0,
         "diverged": False,
+        "upstream_gone": False,
     }
     if not header:
         return info
@@ -729,6 +750,8 @@ def repo_status_branch_info(status: object) -> dict[str, Any]:
     if not status_match:
         return info
     for part in (piece.strip() for piece in status_match.group(1).split(",")):
+        if part == "gone":
+            info["upstream_gone"] = True
         ahead_match = re.search(r"ahead\s+(\d+)", part)
         behind_match = re.search(r"behind\s+(\d+)", part)
         if ahead_match:
@@ -775,6 +798,7 @@ def build_repo_state_risk(repos: dict[str, Any]) -> dict[str, Any]:
         branch_info = repo_status_branch_info(repo.get("status"))
         ahead = int(branch_info.get("ahead", 0) or 0)
         behind = int(branch_info.get("behind", 0) or 0)
+        upstream_gone = bool(branch_info.get("upstream_gone"))
         expected_branches = expected_repo_branches(repo_name)
 
         if dirty_count:
@@ -830,6 +854,26 @@ def build_repo_state_risk(repos: dict[str, Any]) -> dict[str, Any]:
                         "status_header": branch_info.get("header"),
                         "ahead": ahead,
                         "behind": behind,
+                    },
+                }
+            )
+
+        if upstream_gone:
+            tracking = str(branch_info.get("tracking") or "")
+            items.append(
+                {
+                    "repo": repo_name,
+                    "owner_agent": owner,
+                    "priority": 22,
+                    "category": "upstream_gone",
+                    "summary": f"{repo_name} {branch} tracks deleted upstream {tracking or 'unknown'}",
+                    "action": "confirm merged/superseded status, then switch to main or recreate a current owning branch",
+                    "evidence": {
+                        "branch": branch,
+                        "head": repo.get("head"),
+                        "status_header": branch_info.get("header"),
+                        "tracking": tracking,
+                        "upstream_gone": True,
                     },
                 }
             )
@@ -1592,6 +1636,8 @@ def build_next_agent_actions(
             items.append(managed_worktree_action(agent_id, agent, "managed_worktree_dirty", worktree_state))
         if int(worktree_state.get("ahead", 0) or 0) > 0:
             items.append(managed_worktree_action(agent_id, agent, "managed_worktree_ahead", worktree_state))
+        if bool(worktree_state.get("upstream_gone")):
+            items.append(managed_worktree_action(agent_id, agent, "managed_worktree_upstream_gone", worktree_state))
         if int(worktree_state.get("behind", 0) or 0) > 0:
             items.append(managed_worktree_action(agent_id, agent, "managed_worktree_behind", worktree_state))
 
@@ -1810,6 +1856,7 @@ def build_agent_health(
             dirty_count = int(worktree_state.get("dirty_count", 0) or 0)
             ahead = int(worktree_state.get("ahead", 0) or 0)
             behind = int(worktree_state.get("behind", 0) or 0)
+            upstream_gone = bool(worktree_state.get("upstream_gone"))
             if dirty_count:
                 score -= min(12, 4 + dirty_count)
                 reasons.append(f"agent worktree dirty={dirty_count}")
@@ -1818,6 +1865,10 @@ def build_agent_health(
                 score -= 15 if ahead >= 5 else 8
                 reasons.append(f"agent worktree ahead={ahead}")
                 actions.append("推送 ahead 提交并开/更新 PR，或在 final 写明无法推送原因")
+            if upstream_gone:
+                score -= 7
+                reasons.append("agent worktree upstream gone")
+                actions.append("确认当前提交已合并或废弃，切回最新 origin/main 或 owning branch")
             if behind:
                 score -= 6
                 reasons.append(f"agent worktree behind={behind}")
