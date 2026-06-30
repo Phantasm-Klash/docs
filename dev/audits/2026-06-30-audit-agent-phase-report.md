@@ -22,7 +22,7 @@
 ## PR 与版本风险
 
 - 当前 open PR 数：10；needs_action=7，merge_ready=3。
-- merge-ready：docs #28、Gensoulkyo #22、PhK-BattleServer #18 均为 `CLEAN` 且 checks 通过。#22/#18 涉及安全/协议/战斗边界，合并前仍应人工审阅 diff 并保留 protocol audit 证据。
+- merge-ready：docs #28、Gensoulkyo #22、PhK-BattleServer #18 均为 `CLEAN` 且 checks 通过。#22 已推送 head 为 7 个提交，本轮抽审覆盖 settlement alias、service callback envelope guard 与 forbidden battle result projection，未见偏离 docs/dev 服务器权威方向的明显问题；#22/#18 涉及安全/协议/战斗边界，合并前仍应人工审阅 diff 并保留 protocol audit 证据。
 - SpellKard #13/#15/#16/#18：`DIRTY`，需要冲突解决或由 current-base fresh PR 明确 supersede。
 - SpellKard #14/#17/#19：`BEHIND`，需要更新分支、重跑 checks、评审，或由 fresh PR 明确 supersede。
 - 本地 ahead 风险比 PR 风险更大：SpellKard 根仓 ahead 34 与 client-agent worktree ahead 23 会让后续 PR 继续扩张冲突面。
@@ -31,7 +31,7 @@
 
 - `client-agent`：运行中；最新 final 完成 Boss playfield projection 与绘制层，Godot/static 检查通过。风险是 ahead 23 与 7 个旧 PR 积压。
 - `battle-server-agent`：运行中；最新 final 完成 Boss start readiness result projection 与已结算 match 冻结，`tools/check_battle_server.py`、`docker-compose run --rm test`、`protocol_audit_check.py` 通过。
-- `nakama-server-agent`：运行中；最新 final 完成 service-origin RPC/HTTP fallback 拒绝嵌套或直接携带 business envelope 的 callback payload，Go tests、docker-compose test、protocol audit 通过。
+- `nakama-server-agent`：运行中；最新 final 完成 service-origin RPC/HTTP fallback 拒绝嵌套或直接携带 business envelope 的 callback payload，Go tests、docker-compose test、protocol audit 通过。本轮采样时该 worktree 又有 `runtime/httpapi/handler_test.go` 与 `runtime/nakamaapi/handler_test.go` 两个本地测试文件 dirty，若继续推送到 #22，需按最新 head 重采样。
 - `project-manager-agent`：运行中；最新 final 完成 `merge_ready_items`，docs #30 已合并。
 - `audit-agent`：本轮刷新阶段审计报告、邮件优先正文和 final 日志，重点校正 open PR=10、merge-ready=3、SpellKard ahead 23、Gensoulkyo dirty 4。
 
@@ -46,6 +46,7 @@
 - token 消耗风险偏高：nakama-server-agent 约 1.30M、battle-server-agent 约 873k、client-agent 约 687k、audit-agent 约 484k、project-manager-agent 约 389k。后续每轮应更短，先提交/推 PR，再扩下一切片。
 - 停滞风险主要来自三类队列：SpellKard stale PR group、Gensoulkyo 旧 dirty worktree、ready PR 合并速度慢于 agent 产出速度。
 - 新五 agent 当前均有进展证据；需要清退的是旧 roster 与旧 worktree，不是新 goal agents。
+- 第二轮 PR 抽审结论：Gensoulkyo #22 可继续作为 merge-ready 候选，但 active agent 已有本地 dirty 测试改动，若继续推送则审计/测试证据必须随最新 head 重采样。
 
 ## 下一步
 
