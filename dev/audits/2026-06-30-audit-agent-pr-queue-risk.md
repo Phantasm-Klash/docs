@@ -16,6 +16,8 @@
 
 | 仓库 | PR | 状态 | 审计判断 |
 | --- | --- | --- | --- |
+| docs | #34 `Surface next agent action queue` | `CLEAN`，2 checks 通过 | 方向正确：在 PR 队列和资源风险之上生成结构化 `next_agent_actions`，并渲染到三小时邮件，能把 stale PR、review gate 与 token 风险转成可执行队列。只改 `ops/goal_agent_manager.py` 与 `ops/hourly_progress_mail.py`，不改协议/网络/安全实现；合并时注意与 #35 的 docs 报告顺序。 |
+| docs | #35 `Audit PR queue risk gates` | `CLEAN`，2 checks 通过 | 本审计报告 PR，补充 #22/#18 review gate、SpellKard stale group、Gensoulkyo dirty 4、token 风险和旧 agent 清退建议。 |
 | Gensoulkyo | #22 `Tighten business settlement and service callback contracts` | `CLEAN`，2 checks 通过 | 符合 Phase 3 业务服权威方向；涉及 service callback、settlement/result projection、Nakama RPC/WSS 边界，合并前需要人工 diff 审阅与 protocol audit 证据。 |
 | PhK-BattleServer | #18 `Bind boss defeated tick projection` | `CLEAN`，2 checks 通过 | 符合 C++ Battle Server 结算/投影验真方向；分支还包含 decoded session boundary，合并前需要人工 diff 审阅与 protocol audit 证据。 |
 | SpellKard | #13/#15/#16/#18 | `DIRTY` | 不应继续堆新功能扩大冲突面；建议重建一个 current-base PR 或逐项记录 supersede。 |
