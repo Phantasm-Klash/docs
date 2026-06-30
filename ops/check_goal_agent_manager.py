@@ -135,11 +135,34 @@ def check_mail_summary_falls_back_when_primary_is_invalid() -> None:
     assert "client-agent" in summary["agents"]
 
 
+def check_running_agent_prefers_lock_log_path() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        tmp = Path(raw_tmp)
+        logs_dir = tmp / ".agents" / "logs"
+        logs_dir.mkdir(parents=True)
+        old_log = logs_dir / "nakama-server-agent-20260630T150029Z.log"
+        new_log = logs_dir / "nakama-server-agent-20260630T152603Z.log"
+        old_log.write_text("[goal-manager] exited status=0\ntokens used\n921,256\n", encoding="utf-8")
+        new_log.write_text("[goal-manager] started nakama-server-agent\n", encoding="utf-8")
+
+        selected = goal_agent_manager.agent_runtime_log_path(
+            tmp,
+            "nakama-server-agent",
+            {"alive": True, "log_path": str(new_log)},
+        )
+        running_log = goal_agent_manager.log_info(selected)
+
+    assert selected == new_log
+    assert running_log["exited"] is False
+    assert running_log["token_usage"] is None
+
+
 def main() -> int:
     check_legacy_resource_risk_is_structured_not_managed()
     check_pending_pr_checks_are_not_reported_as_branch_gate()
     check_dirty_repo_owner_prefers_active_workdir_agent()
     check_mail_summary_falls_back_when_primary_is_invalid()
+    check_running_agent_prefers_lock_log_path()
     print("check_goal_agent_manager ok")
     return 0
 

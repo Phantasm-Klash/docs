@@ -405,6 +405,13 @@ def latest_log(root: Path, agent_id: str) -> Path | None:
     return logs[-1] if logs else None
 
 
+def agent_runtime_log_path(root: Path, agent_id: str, lock: dict[str, Any]) -> Path | None:
+    log_path = lock.get("log_path")
+    if lock.get("alive") and isinstance(log_path, str) and log_path:
+        return Path(log_path)
+    return latest_log(root, agent_id)
+
+
 def read_log_sample(path: Path, max_bytes: int = LOG_SAMPLE_BYTES) -> tuple[str, int, bool]:
     stat = path.stat()
     sample_bytes = min(stat.st_size, max_bytes)
@@ -1055,6 +1062,7 @@ def lock_status(root: Path, agent_id: str, now: dt.datetime) -> dict[str, Any]:
         "alive": alive,
         "age_seconds": age_seconds,
         "started_at": iso(started_at) if started_at else None,
+        "log_path": payload.get("log_path") if isinstance(payload.get("log_path"), str) else None,
     }
 
 
@@ -1700,7 +1708,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             "workspace": str(root / ".agents" / "workspaces" / agent_id / "README.md"),
         }
         lock = lock_status(root, agent_id, now)
-        log = log_info(latest_log(root, agent_id))
+        log = log_info(agent_runtime_log_path(root, agent_id, lock))
         start, reason = should_start_agent(lock, log, args.force_start, now)
         result: dict[str, Any] | None = None
         if start and not lock.get("alive") and worktree.get("ready", False):
@@ -1715,7 +1723,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             )
             actions.append({"type": "start-goal-agent", "agent": agent_id, "reason": reason, "result": result})
             lock = lock_status(root, agent_id, utcnow())
-            log = log_info(latest_log(root, agent_id))
+            log = log_info(agent_runtime_log_path(root, agent_id, lock))
         elif start and not worktree.get("ready", False):
             actions.append({"type": "worktree-blocked", "agent": agent_id, "reason": str(worktree.get("error") or worktree.get("output") or "worktree not ready")})
 
