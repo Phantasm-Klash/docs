@@ -202,7 +202,8 @@ def command_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env.setdefault("GOCACHE", "/root/.cache/go-build")
     env.setdefault("GOPATH", "/root/go")
     for name in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
-        env.setdefault(name, DEFAULT_PROXY)
+        # The host shell may still export a stale proxy value that breaks gh.
+        env[name] = DEFAULT_PROXY
     if extra:
         env.update(extra)
     return env
