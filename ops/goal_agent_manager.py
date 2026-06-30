@@ -401,7 +401,7 @@ def collect_pull_requests(root: Path, now: dt.datetime) -> dict[str, Any]:
                 "--limit",
                 "20",
                 "--json",
-                "number,title,headRefName,baseRefName,mergeStateStatus,isDraft,url,updatedAt",
+                "number,title,headRefName,baseRefName,mergeStateStatus,isDraft,url,updatedAt,statusCheckRollup",
             ],
             cwd,
             timeout=30,
@@ -420,6 +420,95 @@ def collect_pull_requests(root: Path, now: dt.datetime) -> dict[str, Any]:
             "error": "" if code == 0 else output[-800:],
         }
     return prs
+
+
+def check_rollup_counts(item: dict[str, Any]) -> dict[str, int]:
+    counts = {"success": 0, "failed": 0, "pending": 0, "total": 0}
+    rollup = item.get("statusCheckRollup")
+    if not isinstance(rollup, list):
+        return counts
+    for raw_check in rollup:
+        check = raw_check if isinstance(raw_check, dict) else {}
+        counts["total"] += 1
+        status = str(check.get("status") or "").upper()
+        conclusion = str(check.get("conclusion") or "").upper()
+        state = str(check.get("state") or "").upper()
+        if status and status != "COMPLETED":
+            counts["pending"] += 1
+        elif state in {"PENDING", "EXPECTED"}:
+            counts["pending"] += 1
+        elif conclusion in {"", "SUCCESS", "SKIPPED", "NEUTRAL"} or state == "SUCCESS":
+            counts["success"] += 1
+        else:
+            counts["failed"] += 1
+    return counts
+
+
+def classify_pull_request_action(item: dict[str, Any], checks: dict[str, int]) -> tuple[int, str]:
+    if item.get("isDraft"):
+        return 70, "draft: wait until the owning agent marks it ready"
+    if checks.get("failed", 0) > 0:
+        return 15, "fix failing checks before merge review"
+    merge_state = str(item.get("mergeStateStatus") or "UNKNOWN").upper()
+    if merge_state == "DIRTY":
+        return 10, "resolve conflicts or supersede with the current persistent branch"
+    if merge_state == "BEHIND":
+        return 20, "update branch against main, rerun checks, then review"
+    if merge_state in {"BLOCKED", "HAS_HOOKS"}:
+        return 30, "wait for required review/check gates or branch protection"
+    if checks.get("pending", 0) > 0:
+        return 40, "wait for pending checks"
+    if merge_state == "CLEAN":
+        return 60, "ready for review/merge"
+    return 50, f"inspect merge state {merge_state}"
+
+
+def build_pull_request_queue(pull_requests: dict[str, Any]) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    failed_repos: list[str] = []
+    for repo_name, raw_repo in sorted(pull_requests.items()):
+        repo = raw_repo if isinstance(raw_repo, dict) else {}
+        if not isinstance(repo.get("open_count"), int):
+            failed_repos.append(str(repo.get("repo") or repo_name))
+            continue
+        for raw_item in repo.get("items", []):
+            item = raw_item if isinstance(raw_item, dict) else {}
+            checks = check_rollup_counts(item)
+            priority, action = classify_pull_request_action(item, checks)
+            items.append(
+                {
+                    "repo": repo_name,
+                    "number": item.get("number"),
+                    "title": item.get("title"),
+                    "url": item.get("url"),
+                    "head": item.get("headRefName"),
+                    "base": item.get("baseRefName"),
+                    "merge_state": item.get("mergeStateStatus") or "UNKNOWN",
+                    "draft": bool(item.get("isDraft")),
+                    "updated_at": item.get("updatedAt"),
+                    "checks": checks,
+                    "priority": priority,
+                    "action": action,
+                }
+            )
+    items.sort(key=lambda entry: (int(entry.get("priority", 99)), str(entry.get("repo", "")), int(entry.get("number") or 0)))
+    by_repo: dict[str, int] = {}
+    by_state: dict[str, int] = {}
+    for item in items:
+        repo = str(item.get("repo") or "unknown")
+        state = str(item.get("merge_state") or "UNKNOWN")
+        by_repo[repo] = by_repo.get(repo, 0) + 1
+        by_state[state] = by_state.get(state, 0) + 1
+    return {
+        "open_count": len(items),
+        "failed_repos": failed_repos,
+        "by_repo": by_repo,
+        "by_merge_state": by_state,
+        "ready_count": sum(1 for item in items if item.get("action") == "ready for review/merge"),
+        "needs_action_count": sum(1 for item in items if int(item.get("priority", 99)) < 60),
+        "items": items,
+        "top_items": items[:12],
+    }
 
 
 def prepare_worktree(root: Path, agent_id: str, agent: dict[str, Any], dry_run: bool) -> dict[str, Any]:
@@ -702,6 +791,7 @@ def build_audit_report(summary: dict[str, Any]) -> str:
     legacy = summary.get("legacy_agents") if isinstance(summary.get("legacy_agents"), dict) else {}
     regression = summary.get("regression") if isinstance(summary.get("regression"), dict) else {}
     pull_requests = summary.get("pull_requests") if isinstance(summary.get("pull_requests"), dict) else {}
+    pull_request_queue = summary.get("pull_request_queue") if isinstance(summary.get("pull_request_queue"), dict) else {}
 
     active = [agent_id for agent_id, agent in agents.items() if isinstance(agent, dict) and agent.get("status") == "running"]
     failed = [agent_id for agent_id, agent in agents.items() if isinstance(agent, dict) and agent.get("status") == "failed"]
@@ -726,6 +816,25 @@ def build_audit_report(summary: dict[str, Any]) -> str:
         )
     else:
         pr_line = f"- 当前 open PR 数：{open_pr_count}。"
+
+    pr_queue_lines = [
+        (
+            "- PR 行动队列："
+            f"needs_action={pull_request_queue.get('needs_action_count', 'unknown')}；"
+            f"ready={pull_request_queue.get('ready_count', 'unknown')}；"
+            f"by_repo={pull_request_queue.get('by_repo', {})}；"
+            f"by_state={pull_request_queue.get('by_merge_state', {})}。"
+        )
+    ]
+    for item in pull_request_queue.get("top_items", [])[:8]:
+        if isinstance(item, dict):
+            checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
+            pr_queue_lines.append(
+                "- "
+                f"{item.get('repo')} #{item.get('number')} {item.get('merge_state')} "
+                f"checks={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)} "
+                f"action={item.get('action')} {item.get('url')}"
+            )
 
     agent_lines = []
     for agent_id, raw_agent in sorted(agents.items()):
@@ -777,6 +886,7 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             "",
             f"- 当前 dirty 仓库：{', '.join(dirty_repos) if dirty_repos else '无'}。",
             pr_line,
+            *pr_queue_lines,
             "- 新 agent 使用独立 worktree/工作目录，避免直接覆盖旧 agent 未提交内容；审计 agent 继续判断旧 dirty work 是否应整理成 PR 或废弃。",
             "- 简单线性改动可阶段性提交；跨仓、协议/网络/安全、回归修复和并行开发必须 branch + PR。",
             "",
@@ -805,6 +915,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
 
     repos = {name: collect_repo(root, name) for name in DEFAULT_REPOS}
     pull_requests = collect_pull_requests(root, now)
+    pull_request_queue = build_pull_request_queue(pull_requests)
     runtime = collect_runtime(root)
     regression = read_json(root / ".agents" / "checks" / "latest-regression.json", {"missing": True})
     legacy_agents = collect_legacy_agents(root)
@@ -875,6 +986,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         "resampled_after_actions": True,
         "repos": repos,
         "pull_requests": pull_requests,
+        "pull_request_queue": pull_request_queue,
         "runtime": runtime,
         "regression": regression,
         "legacy_agents": legacy_agents,

@@ -157,6 +157,7 @@ def minimal_watchdog_lines(summary: dict[str, object]) -> list[str]:
     records = agents or scopes
     regression = summary.get("regression") if isinstance(summary.get("regression"), dict) else {}
     pull_requests = summary.get("pull_requests") if isinstance(summary.get("pull_requests"), dict) else {}
+    pull_request_queue = summary.get("pull_request_queue") if isinstance(summary.get("pull_request_queue"), dict) else {}
     actions = summary.get("actions") if isinstance(summary.get("actions"), list) else []
     active = [
         record_id
@@ -175,6 +176,12 @@ def minimal_watchdog_lines(summary: dict[str, object]) -> list[str]:
         )
     ]
     pr_text = pull_request_summary_text(pull_requests)
+    if pull_request_queue:
+        pr_text = (
+            f"{pull_request_queue.get('open_count', pr_text)}"
+            f"（needs_action={pull_request_queue.get('needs_action_count', 'unknown')}，"
+            f"ready={pull_request_queue.get('ready_count', 'unknown')}）"
+        )
     return [
         f"- 生成时间：{format_time_cn(summary.get('generated_at'))}",
         f"- 整体完成度：约 {PROJECT_COMPLETION_PERCENT}%。",
@@ -203,6 +210,39 @@ def pull_request_summary_text(pull_requests: dict[str, object]) -> str:
             f"已采集可见 {open_pr_count}）"
         )
     return str(open_pr_count)
+
+
+def pull_request_queue_lines(summary: dict[str, object], *, limit: int = 8) -> list[str]:
+    queue = summary.get("pull_request_queue") if isinstance(summary.get("pull_request_queue"), dict) else {}
+    if not queue:
+        return ["- 未读取到结构化 PR 行动队列；仅使用 open PR 数。"]
+    failed_repos = queue.get("failed_repos") if isinstance(queue.get("failed_repos"), list) else []
+    lines = [
+        (
+            "- "
+            f"open={queue.get('open_count', 0)}；"
+            f"needs_action={queue.get('needs_action_count', 0)}；"
+            f"ready={queue.get('ready_count', 0)}；"
+            f"by_repo={queue.get('by_repo', {})}；"
+            f"by_state={queue.get('by_merge_state', {})}"
+        )
+    ]
+    if failed_repos:
+        lines.append(f"- PR 采集失败仓库：{'、'.join(str(item) for item in failed_repos[:10])}")
+    items = queue.get("top_items") if isinstance(queue.get("top_items"), list) else []
+    if not items:
+        lines.append("- 当前没有 open PR。")
+        return lines
+    for raw_item in items[:limit]:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
+        lines.append(
+            "- "
+            f"{item.get('repo')} #{item.get('number')}：{item.get('merge_state')}；"
+            f"checks ok/fail/pending={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)}；"
+            f"{item.get('action')}；{item.get('url')}"
+        )
+    return lines
 
 
 def cn_agent_status(value: object) -> str:
@@ -514,6 +554,9 @@ def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: 
         "",
         "审计 agent 汇报:",
         *latest_audit_report_lines(root, watchdog),
+        "",
+        "PR 行动队列:",
+        *pull_request_queue_lines(watchdog),
     ]
     return "\n".join(lines)
 
