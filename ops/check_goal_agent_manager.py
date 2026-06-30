@@ -177,6 +177,7 @@ def check_dirty_repo_owner_prefers_active_workdir_agent() -> None:
     assert summary["count"] == 1
     assert summary["items"][0]["category"] == "dirty_worktree"
     assert summary["items"][0]["owner_agent"] == "audit-agent"
+    assert "先止血版本状态" in summary["items"][0]["action"]
     assert summary["by_owner_agent"] == {"audit-agent": 1}
 
 

@@ -451,6 +451,11 @@ def repo_state_prompt_action(item: dict[str, Any]) -> str:
     return str(item.get("action") or "inspect repository state")
 
 
+def finalize_repo_state_item(item: dict[str, Any]) -> dict[str, Any]:
+    item["action"] = repo_state_prompt_action(item)
+    return item
+
+
 def agent_prompt(agent_id: str, agent: dict[str, Any], persona_path: Path, workdir: Path, key_assignment: dict[str, Any], previous: dict[str, Any]) -> str:
     return f"""你现在是 `{agent_id}`，必须按 Codex `/goal` 持续目标模式工作。
 
@@ -673,7 +678,7 @@ def build_repo_state_risk(repos: dict[str, Any], agents: dict[str, Any] | None =
         if dirty_count:
             priority = 8 if repo_name in {"Gensoulkyo", "PhK-BattleServer", "PhK-Protocol"} else 18
             items.append(
-                {
+                finalize_repo_state_item({
                     "repo": repo_name,
                     "owner_agent": owner,
                     "priority": priority,
@@ -686,12 +691,12 @@ def build_repo_state_risk(repos: dict[str, Any], agents: dict[str, Any] | None =
                         "dirty_count": dirty_count,
                         "dirty": repo.get("dirty"),
                     },
-                }
+                })
             )
 
         if ahead:
             items.append(
-                {
+                finalize_repo_state_item({
                     "repo": repo_name,
                     "owner_agent": owner,
                     "priority": 16 if repo_name == "SpellKard" else 45,
@@ -705,12 +710,12 @@ def build_repo_state_risk(repos: dict[str, Any], agents: dict[str, Any] | None =
                         "ahead": ahead,
                         "behind": behind,
                     },
-                }
+                })
             )
 
         if behind:
             items.append(
-                {
+                finalize_repo_state_item({
                     "repo": repo_name,
                     "owner_agent": owner,
                     "priority": 50,
@@ -724,12 +729,12 @@ def build_repo_state_risk(repos: dict[str, Any], agents: dict[str, Any] | None =
                         "ahead": ahead,
                         "behind": behind,
                     },
-                }
+                })
             )
 
         if branch and branch not in expected_branches and branch.startswith("agent/"):
             items.append(
-                {
+                finalize_repo_state_item({
                     "repo": repo_name,
                     "owner_agent": owner,
                     "priority": 65,
@@ -741,7 +746,7 @@ def build_repo_state_risk(repos: dict[str, Any], agents: dict[str, Any] | None =
                         "head": repo.get("head"),
                         "expected_branches": sorted(expected_branches),
                     },
-                }
+                })
             )
 
     items.sort(key=lambda item: (int(item.get("priority", 99) or 99), str(item.get("repo", "")), str(item.get("category", ""))))
