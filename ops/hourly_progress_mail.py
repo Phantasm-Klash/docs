@@ -226,11 +226,21 @@ def pull_request_queue_lines(summary: dict[str, object], *, limit: int = 8) -> l
             f"by_repo={queue.get('by_repo', {})}；"
             f"by_state={queue.get('by_merge_state', {})}；"
             f"by_owner={queue.get('by_owner_agent', {})}；"
-            f"by_action={queue.get('by_action_category', {})}"
+            f"by_action={queue.get('by_action_category', {})}；"
+            f"supersede_groups={queue.get('supersede_group_count', 0)}"
         )
     ]
     if failed_repos:
         lines.append(f"- PR 采集失败仓库：{'、'.join(str(item) for item in failed_repos[:10])}")
+    groups = queue.get("supersede_groups") if isinstance(queue.get("supersede_groups"), list) else []
+    for raw_group in groups[:4]:
+        group = raw_group if isinstance(raw_group, dict) else {}
+        lines.append(
+            "- "
+            f"{group.get('owner_agent', 'unknown')} -> {group.get('repo')} stale group："
+            f"count={group.get('count')}；prs={group.get('numbers')}；"
+            f"states={group.get('merge_states')}；{group.get('action')}"
+        )
     items = queue.get("top_items") if isinstance(queue.get("top_items"), list) else []
     if not items:
         lines.append("- 当前没有 open PR。")

@@ -481,6 +481,53 @@ def classify_pull_request_action(item: dict[str, Any], checks: dict[str, int]) -
     return 50, "inspect", f"inspect merge state {merge_state}"
 
 
+def build_pr_supersede_groups(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for item in items:
+        category = str(item.get("action_category") or "")
+        if category not in {"resolve_conflicts", "update_branch"}:
+            continue
+        key = (str(item.get("repo") or "unknown"), str(item.get("owner_agent") or "unknown"))
+        grouped.setdefault(key, []).append(item)
+
+    groups: list[dict[str, Any]] = []
+    for (repo, owner_agent), group_items in grouped.items():
+        if len(group_items) < 2:
+            continue
+        states: dict[str, int] = {}
+        categories: dict[str, int] = {}
+        updated_at_values: list[str] = []
+        for item in group_items:
+            state = str(item.get("merge_state") or "UNKNOWN")
+            category = str(item.get("action_category") or "unknown")
+            states[state] = states.get(state, 0) + 1
+            categories[category] = categories.get(category, 0) + 1
+            updated_at = item.get("updated_at")
+            if isinstance(updated_at, str) and updated_at:
+                updated_at_values.append(updated_at)
+        groups.append(
+            {
+                "repo": repo,
+                "owner_agent": owner_agent,
+                "count": len(group_items),
+                "numbers": [item.get("number") for item in group_items],
+                "merge_states": states,
+                "action_categories": categories,
+                "oldest_updated_at": min(updated_at_values) if updated_at_values else None,
+                "newest_updated_at": max(updated_at_values) if updated_at_values else None,
+                "action": "open one fresh current-base PR, or document explicit supersede/close decisions before expanding new work",
+            }
+        )
+    groups.sort(
+        key=lambda entry: (
+            -int(entry.get("count", 0) or 0),
+            str(entry.get("repo", "")),
+            str(entry.get("owner_agent", "")),
+        )
+    )
+    return groups
+
+
 def build_pull_request_queue(pull_requests: dict[str, Any]) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     failed_repos: list[str] = []
@@ -526,6 +573,7 @@ def build_pull_request_queue(pull_requests: dict[str, Any]) -> dict[str, Any]:
         by_state[state] = by_state.get(state, 0) + 1
         by_owner[owner] = by_owner.get(owner, 0) + 1
         by_category[category] = by_category.get(category, 0) + 1
+    supersede_groups = build_pr_supersede_groups(items)
     return {
         "open_count": len(items),
         "failed_repos": failed_repos,
@@ -533,6 +581,8 @@ def build_pull_request_queue(pull_requests: dict[str, Any]) -> dict[str, Any]:
         "by_merge_state": by_state,
         "by_owner_agent": by_owner,
         "by_action_category": by_category,
+        "supersede_group_count": len(supersede_groups),
+        "supersede_groups": supersede_groups,
         "ready_count": sum(1 for item in items if item.get("action_category") == "merge_ready"),
         "needs_action_count": sum(1 for item in items if int(item.get("priority", 99)) < 60),
         "items": items,
@@ -854,9 +904,18 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             f"by_repo={pull_request_queue.get('by_repo', {})}；"
             f"by_state={pull_request_queue.get('by_merge_state', {})}；"
             f"by_owner={pull_request_queue.get('by_owner_agent', {})}；"
-            f"by_action={pull_request_queue.get('by_action_category', {})}。"
+            f"by_action={pull_request_queue.get('by_action_category', {})}；"
+            f"supersede_groups={pull_request_queue.get('supersede_group_count', 0)}。"
         )
     ]
+    for group in pull_request_queue.get("supersede_groups", [])[:4]:
+        if isinstance(group, dict):
+            pr_queue_lines.append(
+                "- "
+                f"{group.get('owner_agent')} -> {group.get('repo')} stale group "
+                f"count={group.get('count')} prs={group.get('numbers')} "
+                f"states={group.get('merge_states')} action={group.get('action')}"
+            )
     for item in pull_request_queue.get("top_items", [])[:8]:
         if isinstance(item, dict):
             checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
