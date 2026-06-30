@@ -241,6 +241,16 @@ def pull_request_queue_lines(summary: dict[str, object], *, limit: int = 8) -> l
             f"count={group.get('count')}；prs={group.get('numbers')}；"
             f"states={group.get('merge_states')}；{group.get('action')}"
         )
+    ready_items = queue.get("merge_ready_items") if isinstance(queue.get("merge_ready_items"), list) else []
+    for raw_item in ready_items[:6]:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
+        lines.append(
+            "- "
+            f"merge-ready {item.get('owner_agent', 'unknown')} -> {item.get('repo')} #{item.get('number')}："
+            f"checks ok/fail/pending={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)}；"
+            f"{item.get('url')}"
+        )
     items = queue.get("top_items") if isinstance(queue.get("top_items"), list) else []
     if not items:
         open_count = int(queue.get("open_count", 0) or 0)

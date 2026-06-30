@@ -574,6 +574,7 @@ def build_pull_request_queue(pull_requests: dict[str, Any]) -> dict[str, Any]:
         by_owner[owner] = by_owner.get(owner, 0) + 1
         by_category[category] = by_category.get(category, 0) + 1
     supersede_groups = build_pr_supersede_groups(items)
+    merge_ready_items = [item for item in items if item.get("action_category") == "merge_ready"]
     return {
         "open_count": len(items),
         "failed_repos": failed_repos,
@@ -583,7 +584,8 @@ def build_pull_request_queue(pull_requests: dict[str, Any]) -> dict[str, Any]:
         "by_action_category": by_category,
         "supersede_group_count": len(supersede_groups),
         "supersede_groups": supersede_groups,
-        "ready_count": sum(1 for item in items if item.get("action_category") == "merge_ready"),
+        "ready_count": len(merge_ready_items),
+        "merge_ready_items": merge_ready_items[:8],
         "needs_action_count": sum(1 for item in items if int(item.get("priority", 99)) < 60),
         "items": items,
         "top_items": items[:12],
@@ -915,6 +917,15 @@ def build_audit_report(summary: dict[str, Any]) -> str:
                 f"{group.get('owner_agent')} -> {group.get('repo')} stale group "
                 f"count={group.get('count')} prs={group.get('numbers')} "
                 f"states={group.get('merge_states')} action={group.get('action')}"
+            )
+    for item in pull_request_queue.get("merge_ready_items", [])[:6]:
+        if isinstance(item, dict):
+            checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
+            pr_queue_lines.append(
+                "- "
+                f"merge-ready {item.get('owner_agent')} -> {item.get('repo')} #{item.get('number')} "
+                f"checks={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)} "
+                f"{item.get('url')}"
             )
     for item in pull_request_queue.get("top_items", [])[:8]:
         if isinstance(item, dict):

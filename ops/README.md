@@ -61,8 +61,9 @@ direction, and running the relevant gates.
 The goal manager also writes a structured `pull_request_queue` section into
 `.agents/goal-agent-summary.json`. The brief progress mail prints its open,
 needs-action, ready, per-repository, per-owner-agent, per-action-category,
-per-merge-state, and stale supersede-group counts plus the top PRs that need
-conflict resolution, branch updates, pending checks, review, or merge. A
+per-merge-state, stale supersede-group counts, and explicit merge-ready PRs
+plus the top PRs that need conflict resolution, branch updates, pending checks,
+review, or merge. A
 supersede group means one repository and owner agent have multiple DIRTY/BEHIND
 PRs that should be consolidated into a fresh current-base PR or explicitly
 closed as superseded before new work expands. The owner field is a routing hint
