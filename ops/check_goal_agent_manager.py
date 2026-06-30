@@ -373,6 +373,38 @@ def check_project_manager_prompt_sees_global_action_queue() -> None:
     assert "当前没有 manager 写入的结构化下一步行动项" in client_prompt
 
 
+def check_resource_output_limit_prompt_follows_agent_scope() -> None:
+    previous = {
+        "next_agent_actions": {
+            "items": [
+                {
+                    "agent": "project-manager-agent",
+                    "repo": "docs",
+                    "category": "resource_risk",
+                    "action": "停止复制长日志和完整 diff",
+                    "evidence": {"severity": "high"},
+                },
+                {
+                    "agent": "audit-agent",
+                    "repo": "docs",
+                    "category": "resource_risk",
+                    "action": "压缩报告和日志尾部",
+                    "evidence": {"severity": "medium"},
+                },
+            ]
+        }
+    }
+
+    manager_limit = goal_agent_manager.previous_resource_output_limit_prompt("project-manager-agent", previous)
+    audit_limit = goal_agent_manager.previous_resource_output_limit_prompt("audit-agent", previous)
+    client_limit = goal_agent_manager.previous_resource_output_limit_prompt("client-agent", previous)
+
+    assert "high 资源风险 repo=docs" in manager_limit
+    assert "final 限 3-5 行" in manager_limit
+    assert "medium 资源风险 repo=docs" in audit_limit
+    assert "当前没有中高资源风险行动项" in client_limit
+
+
 def check_read_only_samples_do_not_persist_authoritative_state() -> None:
     with tempfile.TemporaryDirectory(prefix="goal-agent-manager-check-") as tmp:
         root = Path(tmp)
@@ -536,6 +568,7 @@ def main() -> int:
     check_upstream_gone_status_becomes_repo_and_health_risk()
     check_repo_state_health_actions_are_actionable_chinese()
     check_project_manager_prompt_sees_global_action_queue()
+    check_resource_output_limit_prompt_follows_agent_scope()
     check_read_only_samples_do_not_persist_authoritative_state()
     check_live_lock_log_is_preferred_over_latest_old_log()
     check_exit_status_only_uses_runner_marker_line()
