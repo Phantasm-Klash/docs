@@ -173,15 +173,7 @@ def minimal_watchdog_lines(summary: dict[str, object]) -> list[str]:
             or raw_record.get("version_blocked")
         )
     ]
-    open_pr_count = 0
-    pr_unknown = False
-    for raw_repo in pull_requests.values():
-        repo = raw_repo if isinstance(raw_repo, dict) else {}
-        count = repo.get("open_count")
-        if isinstance(count, int):
-            open_pr_count += count
-        else:
-            pr_unknown = True
+    pr_text = pull_request_summary_text(pull_requests)
     return [
         f"- 生成时间：{format_time_cn(summary.get('generated_at'))}",
         f"- 整体完成度：约 {PROJECT_COMPLETION_PERCENT}%。",
@@ -189,8 +181,27 @@ def minimal_watchdog_lines(summary: dict[str, object]) -> list[str]:
         f"- 回归状态：ok={regression.get('ok', 'unknown')}，failed={regression.get('failed_count', 'unknown')}。",
         f"- Active agent：{', '.join(sorted(active)) if active else '无'}。",
         f"- Failed/blocked agent：{', '.join(sorted(failed_or_blocked)) if failed_or_blocked else '无'}。",
-        f"- Open PR：{'unknown' if pr_unknown else open_pr_count}；manager actions={len(actions)}；本轮启动={summary.get('started_count', 0)}。",
+        f"- Open PR：{pr_text}；manager actions={len(actions)}；本轮启动={summary.get('started_count', 0)}。",
     ]
+
+
+def pull_request_summary_text(pull_requests: dict[str, object]) -> str:
+    open_pr_count = 0
+    failed_repos: list[str] = []
+    for repo_name, raw_repo in sorted(pull_requests.items()):
+        repo = raw_repo if isinstance(raw_repo, dict) else {}
+        count = repo.get("open_count")
+        if isinstance(count, int):
+            open_pr_count += count
+        else:
+            failed_repos.append(str(repo.get("repo") or repo_name))
+    if failed_repos:
+        return (
+            "未知"
+            f"（{len(failed_repos)} 个仓库采集失败：{'、'.join(failed_repos[:10])}；"
+            f"已采集可见 {open_pr_count}）"
+        )
+    return str(open_pr_count)
 
 
 def cn_agent_status(value: object) -> str:
