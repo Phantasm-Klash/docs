@@ -1945,10 +1945,13 @@ def build_audit_report(summary: dict[str, Any]) -> str:
         if isinstance(item, dict):
             token_usage = item.get("token_usage")
             token_text = f"{int(token_usage):,}" if isinstance(token_usage, int) else "unknown"
+            reasons = item.get("reasons") if isinstance(item.get("reasons"), list) else []
+            reason_text = ",".join(str(reason) for reason in reasons[:3])
+            reason_suffix = f" reasons={reason_text}" if reason_text else ""
             resource_lines.append(
                 "- "
                 f"{item.get('agent')} {item.get('severity')} tokens={token_text} "
-                f"log_bytes={item.get('log_bytes')} action={item.get('action')}"
+                f"log_bytes={item.get('log_bytes')}{reason_suffix} action={item.get('action')}"
             )
     repo_risk_lines = [
         (
