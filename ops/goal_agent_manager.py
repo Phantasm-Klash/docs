@@ -461,12 +461,25 @@ def repo_state_prompt_action(item: dict[str, Any]) -> str:
         )
     if category == "local_ahead":
         ahead = evidence.get("ahead")
+        behind = int(evidence.get("behind", 0) or 0)
+        if behind:
+            return (
+                f"先处理 {repo} {branch} diverged：本地 ahead={ahead} 且 behind={behind}；"
+                "不要继续叠加本地提交。先确认 ahead 提交是否仍有价值，"
+                "基于最新 origin/main 重放到 owning agent 分支并开/更新 PR，或写明 supersede/废弃原因"
+            )
         return (
             f"先处理 {repo} {branch} 本地 ahead={ahead}：推送并开/更新 PR，"
             "或记录无法推送原因；不要继续叠加本地提交"
         )
     if category == "local_behind":
         behind = evidence.get("behind")
+        ahead = int(evidence.get("ahead", 0) or 0)
+        if ahead:
+            return (
+                f"先收敛 {repo} {branch} diverged：ahead={ahead}、behind={behind}；"
+                "先保留/迁移本地提交，再同步最新 upstream，完成前不要选择新业务切片"
+            )
         return f"先同步 {repo} {branch} behind={behind} 到最新 upstream，再选择新切片"
     if category == "upstream_gone":
         tracking = prompt_clip(evidence.get("tracking"), 96)
@@ -522,7 +535,10 @@ def managed_worktree_action(agent_id: str, agent: dict[str, Any], category: str,
             "priority": 9,
             "category": category,
             "summary": f"{agent_id} managed worktree upstream is gone on {branch}",
-            "action": f"当前跟踪分支 {tracking or 'upstream'} 已删除；切回最新 origin/main 或 owning branch，确认已合并提交后再继续新切片",
+            "action": (
+                f"当前跟踪分支 {tracking or 'upstream'} 已删除；先 fetch/prune 并确认 HEAD 是否已进入 origin/main。"
+                "已合并则切回最新 origin/main 或 owning branch；未合并则基于最新 origin/main 重建分支/PR。完成前不要继续新切片"
+            ),
             "evidence": evidence,
         }
     behind = int(worktree_state.get("behind", 0) or 0)
@@ -887,7 +903,11 @@ def build_repo_state_risk(repos: dict[str, Any]) -> dict[str, Any]:
                     "priority": 16 if repo_name == "SpellKard" else 45,
                     "category": "local_ahead",
                     "summary": f"{repo_name} {branch} is ahead of upstream by {ahead} commit(s)",
-                    "action": "push or convert the local commits into a current-base PR, then sync the owning managed branch",
+                    "action": (
+                        "push or convert the local commits into a current-base PR, then sync the owning managed branch"
+                        if not behind
+                        else "preserve useful local commits, replay them on current origin/main as an owning-agent PR, or document supersede before new work"
+                    ),
                     "evidence": {
                         "branch": branch,
                         "head": repo.get("head"),
@@ -906,7 +926,11 @@ def build_repo_state_risk(repos: dict[str, Any]) -> dict[str, Any]:
                     "priority": 50,
                     "category": "local_behind",
                     "summary": f"{repo_name} {branch} is behind upstream by {behind} commit(s)",
-                    "action": "update the checkout before using it as a baseline for new work",
+                    "action": (
+                        "update the checkout before using it as a baseline for new work"
+                        if not ahead
+                        else "treat the checkout as diverged: migrate useful ahead commits, then update to upstream before using it as a baseline"
+                    ),
                     "evidence": {
                         "branch": branch,
                         "head": repo.get("head"),
