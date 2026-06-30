@@ -288,6 +288,36 @@ def agent_status_lines(summary: dict[str, object]) -> list[str]:
     return lines
 
 
+def agent_resource_risk_lines(summary: dict[str, object], *, limit: int = 6) -> list[str]:
+    risk = summary.get("agent_resource_risk") if isinstance(summary.get("agent_resource_risk"), dict) else {}
+    if not risk:
+        return ["- 未读取到结构化 agent 资源风险；详见 agent 状态行。"]
+    lines = [
+        (
+            "- "
+            f"high={risk.get('high_count', 0)}；"
+            f"medium={risk.get('medium_count', 0)}；"
+            f"thresholds={risk.get('thresholds', {})}"
+        )
+    ]
+    items = risk.get("top_items") if isinstance(risk.get("top_items"), list) else []
+    if not items:
+        lines.append("- 当前没有可展示的资源风险项。")
+        return lines
+    for raw_item in items[:limit]:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        token_usage = item.get("token_usage")
+        token_text = f"{int(token_usage):,}" if isinstance(token_usage, int) else "未知"
+        lines.append(
+            "- "
+            f"{item.get('agent')}：{item.get('severity')}；"
+            f"tokens={token_text}；"
+            f"log_bytes={item.get('log_bytes', 'unknown')}；"
+            f"{item.get('action', '')}"
+        )
+    return lines
+
+
 def section_lines_from_report(text: str, headings: tuple[str, ...], *, limit: int = 8) -> list[str]:
     if not text:
         return []
@@ -551,6 +581,9 @@ def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: 
         "",
         "服务器状态:",
         *agent_status_lines(watchdog),
+        "",
+        "Agent 资源风险:",
+        *agent_resource_risk_lines(watchdog),
         "",
         "审计 agent 汇报:",
         *latest_audit_report_lines(root, watchdog),
