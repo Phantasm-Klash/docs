@@ -1,33 +1,37 @@
 # gotouhou Ops Helpers
 
-## Three-hour progress mail and watchdog
+## Goal agents and three-hour progress mail
 
-`agent_watchdog.py` runs before the periodic mailer. It samples the manager,
-the four development scopes, two continuous review scopes, the five child
-repositories, and systemd mail status. If a scope is missing it starts a
-fallback `codex exec` worker.
-If a scope has no commit, scoped diff, heartbeat, test log, useful worker log,
-or managed report progress for two consecutive three-hour samples, it is reported
-as a stall risk. A live `/goal` agent is not interrupted only because the report
-interval arrived; the watchdog records the risk and waits for the next sample.
-After any cleanup/start action,
-the watchdog re-samples systemd units, locks, logs, reports, runtime, and child
-repository state before writing the summary used by mail. Agent active state is
-validated from the transient systemd unit plus the recorded or systemd main PID,
-so a still-running unit is not hidden by an old `alive=false` snapshot. The
-watchdog writes host-local state under `/root/gotouhou/.agents/` and does not
-store secrets in git.
+`goal_agent_manager.py` is the current orchestration entry point. It manages
+four sustained Codex `/goal` agents by agent identity only:
 
-Fallback workers are launched with Codex `/goal` sustained-target prompts. The
-watchdog reads per-agent API keys from the host-local `/root/.codex/keys` file
-or from `CODEX_AGENT_KEYS` when set. The file may contain `alias: value` or
-`alias=value` lines; key values are injected into child process environment only
-and are never written to JSON, logs, email, or git. Current default alias
-fallbacks are:
+- `client-agent`: SpellKard client, core bullet gameplay, UI, replay/practice,
+  and client/server protocol alignment.
+- `battle-server-agent`: C++ battle server, match room lifecycle, temporary
+  battle/Boss instances, authoritative simulation, replay/hash, and settlement
+  signing.
+- `nakama-server-agent`: Gensoulkyo/Nakama business server, PVP queue, battle
+  qualification, lobby/room state, allocation/ticket, callbacks, and audit
+  persistence.
+- `audit-agent`: Chinese audit of commits, direction, agent status, version
+  flow, and the three-hour mail report.
 
-- `spellkard-bullet`, `spellkard-ui`: `spellkard`;
-- `gensoulkyo-lobby`: `gensoulkyo`;
-- `phk-battle-server`, `change-describer`, `plan-auditor`, `manager`: `other`.
+The manager no longer uses path-slice scheduling or progress heuristics. Codex
+`/goal` mode is responsible for stable iterative work. The manager checks
+whether each agent is running, completed, failed, or missing; it starts only
+missing/failed/due agents and never interrupts a running goal agent simply
+because the report interval arrived.
+
+Agent workers are launched with Codex `/goal` sustained-target prompts. The
+manager reads per-agent API keys from the host-local `/root/.codex/keys` file.
+The file may contain `alias: value` or `alias=value` lines; key values are
+injected into child process environment only and are never written to JSON, logs,
+email, or git. Current default alias fallbacks are:
+
+- `client-agent`: `spellkard`, then `other`;
+- `battle-server-agent`: `phk`, `battle-server`, `battle`, then `other`;
+- `nakama-server-agent`: `gensoulkyo`, then `other`;
+- `audit-agent`: `audit`, `docs`, `ops`, then `other`.
 
 Keep `/root/.codex/keys` mode `0600`; the progress email reports only aliases and
 permission warnings.
@@ -37,14 +41,14 @@ Development workers prioritize finishing the overall project according to
 risk control, not for every commit:
 
 - simple, single-repo, linear changes may be committed on the current target branch when local policy allows;
-- complex branches, multi-path validation, cross-repo protocol/network/security work, regression fixes, and parallel agent work should use `agent/<scope>/<YYYYMMDD-HHMM>` or `fix/<area>` branches plus PRs;
+- complex branches, multi-path validation, cross-repo protocol/network/security work, regression fixes, and parallel agent work should use `agent/<agent>/<YYYYMMDD-HHMM>` or `fix/<area>` branches plus PRs;
 - every verified stage should still be committed separately with tests and remaining risk noted;
 - PRs should include summary, tests, risks, protocol/network/security impact, and docs/dev direction notes.
 
-The watchdog samples open PRs across the five repositories. When explicitly
-enabled with `GOTOUHOU_WATCHDOG_APPROVE_PRS=1` or `--approve-prs`, it may read
-PR metadata, check docs/dev direction, run local gates, and approve non-draft
-`main` PRs without blockers via `gh pr review --approve`. It does not merge PRs.
+The audit agent samples open PRs across the five repositories and reports which
+PRs need review, conflict resolution, tests, or branch-protection handling. PR
+approval/merge should happen only after reading the diff, checking docs/dev
+direction, and running the relevant gates.
 
 SpellKard workers should use the Linux Godot binary at
 `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` for headless checks. Server
@@ -55,16 +59,18 @@ Pure Godot renderer failures caused by a headless server without a GPU may be
 marked ignored/blocked. GDScript parse, compile, type, script-load, UI contract,
 or bullet contract failures are real regressions and must not be ignored.
 
-`hourly_progress_mail.py` sends a concise watchdog-aware summary to
+`hourly_progress_mail.py` sends a concise goal-agent summary every three
+hours to
 `wjcwqc@qq.com` through `smtp.ym.163.com:25`. It reads SMTP credentials from
 environment variables and does not print or store the password. The summary is
-intentionally short: project completion percent, current phase, regression
-status, active/blocked agents, repository status, and next priorities.
+intentionally short and prioritizes the audit-agent report: project completion
+percent, current phase, regression status, active/blocked agents, git/version
+risk, and next priorities.
 
 Dry run:
 
 ```sh
-python3 ops/agent_watchdog.py --dry-run
+python3 ops/goal_agent_manager.py --dry-run
 python3 ops/hourly_progress_mail.py --dry-run
 ```
 
@@ -83,6 +89,7 @@ sudo install -m 0644 ops/gotouhou-hourly-progress.service /etc/systemd/system/
 sudo install -m 0644 ops/gotouhou-hourly-progress.timer /etc/systemd/system/
 sudo editor /etc/gotouhou/progress-mail.env
 sudo systemctl daemon-reload
+sudo systemctl disable --now gotouhou-agent-watchdog.timer
 sudo systemctl enable --now gotouhou-hourly-progress.timer
 ```
 
@@ -102,16 +109,18 @@ on the configured port.
 
 Operational status files:
 
-- `/root/gotouhou/.agents/agent-roster.json`: scope roster and fallback starts;
+- `/root/gotouhou/.agents/goal-agent-summary.json`: current goal agent status;
 - `/root/gotouhou/.agents/hourly-snapshots/*.json`: periodic samples;
-- `/root/gotouhou/.agents/last-watchdog-summary.json`: latest mail summary input;
-- `/root/gotouhou/.agents/watchdog-last-error.log`: last watchdog stderr when the runner had to send a failure mail;
+- `/root/gotouhou/.agents/last-watchdog-summary.json`: latest mail summary input, kept for mail compatibility;
+- `/root/gotouhou/.agents/goal-agent-manager-last-error.log`: last manager stderr when the runner had to send a failure mail;
 - `/root/gotouhou/.agents/checks/latest-regression.json`: latest Godot, protocol, and Docker/docker-compose regression result;
-- `/root/gotouhou/.agents/reports/change-summary-latest.md`: Chinese feature summary for email;
-- `/root/gotouhou/.agents/reports/plan-audit-latest.md`: docs/dev direction audit and prompt suggestions;
-- `/root/gotouhou/.agents/agent-prompts/`: current persistent review-agent prompts;
+- `/root/gotouhou/.agents/reports/audit-agent-latest.md`: Chinese audit report used by mail;
+- `/root/gotouhou/.agents/reports/plan-audit-latest.md`: compatibility copy of the audit report;
+- `/root/gotouhou/.agents/personas/`: persistent agent persona documents;
+- `/root/gotouhou/.agents/agent-prompts/`: current persistent goal-agent prompts;
+- `/root/gotouhou/.agents/worktrees/`: independent agent worktrees;
 - `/root/gotouhou/.agents/logs/`: fallback `codex exec` logs;
-- `/root/gotouhou/.agents/locks/`: per-scope and per-repository lock files.
+- `/root/gotouhou/.agents/locks/`: per-agent and per-repository lock files.
 
 Validate units after installing:
 

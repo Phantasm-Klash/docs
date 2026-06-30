@@ -5,10 +5,12 @@ ROOT="${GOTOUHOU_ROOT:-/root/gotouhou}"
 DOCS="$ROOT/docs"
 AGENTS="$ROOT/.agents"
 SUMMARY="$AGENTS/last-watchdog-summary.json"
-ERROR_LOG="$AGENTS/watchdog-last-error.log"
+ERROR_LOG="$AGENTS/goal-agent-manager-last-error.log"
 REGRESSION_LOG="$AGENTS/regression-last-run.log"
+RUN_LOCK="$AGENTS/locks/goal-agent-manager-run.lock"
 
 mkdir -p "$AGENTS"
+mkdir -p "$AGENTS/locks"
 export HOME="${HOME:-/root}"
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/root/.config}"
 export GOCACHE="${GOCACHE:-/root/.cache/go-build}"
@@ -18,14 +20,26 @@ mkdir -p "$GOCACHE" "$GOPATH"
 /usr/bin/python3 "$DOCS/ops/run_regression_checks.py" --root "$ROOT" > "$REGRESSION_LOG" 2>&1 || true
 
 set -- --root "$ROOT"
-if [ "${GOTOUHOU_WATCHDOG_APPROVE_PRS:-0}" = "1" ]; then
-  set -- "$@" --approve-prs
-fi
 
-if /usr/bin/python3 "$DOCS/ops/agent_watchdog.py" "$@" > "$AGENTS/watchdog-last-run.json" 2> "$ERROR_LOG"; then
-  rm -f "$ERROR_LOG"
+status=0
+if command -v flock >/dev/null 2>&1; then
+  if flock -n "$RUN_LOCK" /usr/bin/python3 "$DOCS/ops/goal_agent_manager.py" "$@" > "$AGENTS/goal-agent-manager-last-run.json" 2> "$ERROR_LOG"; then
+    rm -f "$ERROR_LOG"
+  else
+    status=$?
+  fi
 else
-  status=$?
+  if /usr/bin/python3 "$DOCS/ops/goal_agent_manager.py" "$@" > "$AGENTS/goal-agent-manager-last-run.json" 2> "$ERROR_LOG"; then
+    rm -f "$ERROR_LOG"
+  else
+    status=$?
+  fi
+fi
+if [ "$status" -eq 1 ]; then
+  status=0
+  printf '%s\n' 'goal agent manager lock is busy; using latest summary for mail' > "$ERROR_LOG"
+fi
+if [ "$status" -ne 0 ]; then
   /usr/bin/python3 - "$SUMMARY" "$ERROR_LOG" "$status" <<'PY'
 import datetime as dt
 import json
@@ -42,14 +56,15 @@ payload = {
     "generated_at": now,
     "root": "/root/gotouhou",
     "watchdog_failed": True,
+    "manager": "goal_agent_manager",
     "resampled_after_actions": False,
-    "failures": [{"type": "watchdog-run-failed", "status": status, "error": error}],
+    "failures": [{"type": "goal-agent-manager-run-failed", "status": status, "error": error}],
     "actions": [],
     "action_count": 0,
     "started_count": 0,
     "reports": {},
     "repos": {},
-    "scopes": {},
+    "agents": {},
     "manager": {"mode": "unknown", "stale": "unknown", "age_seconds": "unknown"},
     "summary_path": str(summary_path),
 }

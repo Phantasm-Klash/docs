@@ -12,6 +12,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import smtplib
 import subprocess
 import sys
@@ -23,6 +24,19 @@ DEFAULT_REPOS = ("docs", "SpellKard", "Gensoulkyo", "PhK-BattleServer", "PhK-Pro
 DEFAULT_WATCHDOG_SUMMARY = "/root/gotouhou/.agents/last-watchdog-summary.json"
 REPORT_INTERVAL_HOURS = 3
 PROJECT_COMPLETION_PERCENT = 38
+UTC_PLUS_8 = dt.timezone(dt.timedelta(hours=8))
+
+
+def format_time_cn(value: object) -> str:
+    parsed: dt.datetime | None = None
+    if isinstance(value, str) and value:
+        try:
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            parsed = None
+    if parsed is None:
+        parsed = dt.datetime.now(dt.timezone.utc)
+    return parsed.astimezone(UTC_PLUS_8).strftime("%Y-%m-%d %H:%M:%S UTC+8")
 
 
 def run_git(repo: Path, args: list[str]) -> str:
@@ -59,9 +73,9 @@ def bool_cn(value: object) -> str:
     return str(value)
 
 
-def scope_risk_description(scope_id: str, scope: dict[str, object]) -> str:
-    lock = scope.get("lock") if isinstance(scope.get("lock"), dict) else {}
-    log = scope.get("log") if isinstance(scope.get("log"), dict) else {}
+def record_risk_description(record_id: str, record: dict[str, object]) -> str:
+    lock = record.get("lock") if isinstance(record.get("lock"), dict) else {}
+    log = record.get("log") if isinstance(record.get("log"), dict) else {}
     reasons: list[str] = []
     if lock.get("stale"):
         reasons.append("lock 过期")
@@ -69,24 +83,24 @@ def scope_risk_description(scope_id: str, scope: dict[str, object]) -> str:
         reasons.append("死锁/异常退出未完成")
     if lock.get("alive") and not log.get("useful_hash"):
         reasons.append("已启动但暂无有效输出")
-    if scope.get("report_expected") and not scope.get("report_updated"):
+    if record.get("report_expected") and not record.get("report_updated"):
         reasons.append("报告未更新")
-    if scope.get("version_blocked"):
-        reasons.append("agent 已退出但 scope 路径仍有未提交改动，版本流程未完成")
-    if scope.get("failed_runtime"):
+    if record.get("version_blocked"):
+        reasons.append("agent 已退出但仍有未提交改动，版本流程未完成")
+    if record.get("failed_runtime"):
         reasons.append("fallback 非零退出")
-    if scope.get("idle_until_next_hour"):
+    if record.get("idle_until_next_hour"):
         reasons.append(f"当前 {REPORT_INTERVAL_HOURS} 小时窗口已完成，等待下个窗口继续 /goal")
-    stalled_count = int(scope.get("stalled_count", 0) or 0)
+    stalled_count = int(record.get("stalled_count", 0) or 0)
     if stalled_count >= 2:
-        reasons.append("连续两次无 scoped diff/commit/scope heartbeat/test signal")
-    elif not scope.get("progress"):
-        reasons.append("本轮无 scoped diff/commit/scope heartbeat/test signal")
-    if scope.get("recent_launch_failed"):
+        reasons.append("连续两次无有效提交、日志、心跳或测试信号")
+    elif not record.get("progress"):
+        reasons.append("本轮无有效提交、日志、心跳或测试信号")
+    if record.get("recent_launch_failed"):
         reasons.append("上次补救无有效输出")
     if not reasons:
         return ""
-    return f"{scope_id}: " + "；".join(reasons)
+    return f"{record_id}: " + "；".join(reasons)
 
 
 def summarize_repo(root: Path, name: str) -> str:
@@ -136,20 +150,28 @@ def summarize_repo_brief(root: Path, name: str) -> str:
 
 def minimal_watchdog_lines(summary: dict[str, object]) -> list[str]:
     if not summary:
-        return ["- Watchdog: no summary file found"]
+        return ["- Agent summary: no summary file found"]
+    agents = summary.get("agents") if isinstance(summary.get("agents"), dict) else {}
     scopes = summary.get("scopes") if isinstance(summary.get("scopes"), dict) else {}
+    records = agents or scopes
     regression = summary.get("regression") if isinstance(summary.get("regression"), dict) else {}
     pull_requests = summary.get("pull_requests") if isinstance(summary.get("pull_requests"), dict) else {}
     actions = summary.get("actions") if isinstance(summary.get("actions"), list) else []
     active = [
-        scope_id
-        for scope_id, raw_scope in scopes.items()
-        if isinstance(raw_scope, dict) and (raw_scope.get("lock") or {}).get("alive")
+        record_id
+        for record_id, raw_record in records.items()
+        if isinstance(raw_record, dict) and ((raw_record.get("lock") or {}).get("alive") or raw_record.get("status") == "running")
     ]
     failed_or_blocked = [
-        scope_id
-        for scope_id, raw_scope in scopes.items()
-        if isinstance(raw_scope, dict) and (raw_scope.get("failed_runtime") or raw_scope.get("recent_launch_failed") or raw_scope.get("version_blocked"))
+        record_id
+        for record_id, raw_record in records.items()
+        if isinstance(raw_record, dict)
+        and (
+            raw_record.get("status") in {"failed", "blocked"}
+            or raw_record.get("failed_runtime")
+            or raw_record.get("recent_launch_failed")
+            or raw_record.get("version_blocked")
+        )
     ]
     open_pr_count = 0
     pr_unknown = False
@@ -161,14 +183,94 @@ def minimal_watchdog_lines(summary: dict[str, object]) -> list[str]:
         else:
             pr_unknown = True
     return [
-        f"- Generated: {summary.get('generated_at', '(unknown)')}",
-        f"- Overall progress: about {PROJECT_COMPLETION_PERCENT}%",
-        "- Current phase: Phase 3, server-authoritative online MVP and server split convergence",
-        f"- Regression: ok={regression.get('ok', 'unknown')} failed={regression.get('failed_count', 'unknown')}",
-        f"- Active agents: {', '.join(sorted(active)) if active else 'none'}",
-        f"- Failed/blocked agents: {', '.join(sorted(failed_or_blocked)) if failed_or_blocked else 'none'}",
-        f"- Open PRs: {'unknown' if pr_unknown else open_pr_count}; watchdog actions={len(actions)}; started={summary.get('started_count', 0)}",
+        f"- 生成时间：{format_time_cn(summary.get('generated_at'))}",
+        f"- 整体完成度：约 {PROJECT_COMPLETION_PERCENT}%。",
+        "- 当前阶段：Phase 3，服务器权威在线 MVP 与服务拆分收敛。",
+        f"- 回归状态：ok={regression.get('ok', 'unknown')}，failed={regression.get('failed_count', 'unknown')}。",
+        f"- Active agent：{', '.join(sorted(active)) if active else '无'}。",
+        f"- Failed/blocked agent：{', '.join(sorted(failed_or_blocked)) if failed_or_blocked else '无'}。",
+        f"- Open PR：{'unknown' if pr_unknown else open_pr_count}；manager actions={len(actions)}；本轮启动={summary.get('started_count', 0)}。",
     ]
+
+
+def cn_agent_status(value: object) -> str:
+    mapping = {
+        "started": "运行中",
+        "running": "运行中",
+        "active": "运行中",
+        "completed": "已完成",
+        "blocked": "阻塞",
+        "failed": "失败",
+        "unknown": "未知",
+    }
+    return mapping.get(str(value), str(value))
+
+
+def agent_status_lines(summary: dict[str, object]) -> list[str]:
+    agents = summary.get("agents") if isinstance(summary.get("agents"), dict) else {}
+    scopes = summary.get("scopes") if isinstance(summary.get("scopes"), dict) else {}
+    records = agents or scopes
+    if not records:
+        return ["- 未读取到 agent 状态。"]
+    lines: list[str] = []
+    for agent_id, raw_agent in sorted(records.items()):
+        agent = raw_agent if isinstance(raw_agent, dict) else {}
+        lock = agent.get("lock") if isinstance(agent.get("lock"), dict) else {}
+        runtime_log = agent.get("runtime_log") if isinstance(agent.get("runtime_log"), dict) else {}
+        token_usage = runtime_log.get("token_usage")
+        token_text = f"{int(token_usage):,}" if isinstance(token_usage, int) else "未知"
+        elapsed = runtime_log.get("elapsed") or "未知"
+        state = cn_agent_status(agent.get("status", "unknown"))
+        if lock.get("alive"):
+            state = "运行中"
+        elif agent.get("version_blocked"):
+            state = "版本阻塞"
+        elif agent.get("failed_runtime") or agent.get("recent_launch_failed"):
+            state = "失败"
+        deferred = agent.get("deferred_reason") if agent.get("deferred") else ""
+        extra = f"；暂缓：{deferred}" if deferred else ""
+        lines.append(
+            f"- {agent_id}：{state}；repo={agent.get('repo', 'unknown')}；"
+            f"tokens={token_text}；耗时={elapsed}；progress={bool_cn(agent.get('progress'))}{extra}"
+        )
+    return lines
+
+
+def section_lines_from_report(text: str, headings: tuple[str, ...], *, limit: int = 8) -> list[str]:
+    if not text:
+        return []
+    lines = text.splitlines()
+    wanted: list[str] = []
+    active = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            active = any(name in stripped for name in headings)
+            continue
+        if active and stripped.startswith("- "):
+            wanted.append(stripped)
+        if len(wanted) >= limit:
+            break
+    return wanted
+
+
+def audited_update_lines(summary: dict[str, object]) -> list[str]:
+    reports = summary.get("reports") if isinstance(summary.get("reports"), dict) else {}
+    audit_report = reports.get("audit_report") if isinstance(reports.get("audit_report"), dict) else {}
+    change = reports.get("change_summary") if isinstance(reports.get("change_summary"), dict) else {}
+    audit = reports.get("plan_audit") if isinstance(reports.get("plan_audit"), dict) else {}
+    lines = []
+    lines.extend(section_lines_from_report(str(audit_report.get("text", "")), ("结论", "新 agent 状态", "Git 与版本风险", "下个三小时方向"), limit=10))
+    lines.extend(section_lines_from_report(str(change.get("text", "")), ("本轮新增", "审计到的更新", "版本管理状态", "阻塞/风险"), limit=6))
+    lines.extend(section_lines_from_report(str(audit.get("text", "")), ("风险", "流程判断", "阶段判断"), limit=5))
+    if not lines:
+        actions = summary.get("actions") if isinstance(summary.get("actions"), list) else []
+        for action in actions[:6]:
+            if isinstance(action, dict):
+                lines.append(f"- {action.get('agent') or action.get('repo') or 'manager'}：{action.get('reason', action.get('type', '已更新'))}")
+    if not lines:
+        lines.append("- 本轮未审计到新的可汇报更新；继续按 docs/dev Phase 3 主线推进。")
+    return lines[:10]
 
 
 def watchdog_lines(summary: dict[str, object]) -> list[str]:
@@ -178,7 +280,8 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
     manager = summary.get("manager") if isinstance(summary.get("manager"), dict) else {}
     actions = summary.get("actions") if isinstance(summary.get("actions"), list) else []
     failures = summary.get("failures") if isinstance(summary.get("failures"), list) else []
-    scopes = summary.get("scopes") if isinstance(summary.get("scopes"), dict) else {}
+    agents = summary.get("agents") if isinstance(summary.get("agents"), dict) else {}
+    legacy_records = summary.get("scopes") if isinstance(summary.get("scopes"), dict) else {}
     systemd_mail = summary.get("systemd_mail") if isinstance(summary.get("systemd_mail"), dict) else {}
     reports = summary.get("reports") if isinstance(summary.get("reports"), dict) else {}
     keyring = summary.get("keyring") if isinstance(summary.get("keyring"), dict) else {}
@@ -276,30 +379,40 @@ def watchdog_lines(summary: dict[str, object]) -> list[str]:
                 if isinstance(item, dict):
                     lines.append(f"- failed: {item.get('name')} status={item.get('status')} blocked={item.get('blocked', False)}")
 
-    if scopes:
+    if agents:
         lines.append("")
         lines.append("Agent 最终状态:")
-        for scope_id, raw_scope in sorted(scopes.items()):
-            scope = raw_scope if isinstance(raw_scope, dict) else {}
-            action_count = len(scope.get("actions", [])) if isinstance(scope.get("actions"), list) else 0
-            lock = scope.get("lock") if isinstance(scope.get("lock"), dict) else {}
+        for agent_id, raw_agent in sorted(agents.items()):
+            agent = raw_agent if isinstance(raw_agent, dict) else {}
+            lock = agent.get("lock") if isinstance(agent.get("lock"), dict) else {}
             unit_info = lock.get("unit_info") if isinstance(lock.get("unit_info"), dict) else {}
-            risk = scope_risk_description(scope_id, scope)
+            risk = record_risk_description(agent_id, agent)
             lines.append(
                 "- "
-                f"{scope_id}: status={scope.get('status', 'unknown')} "
-                f"continuous={scope.get('continuous', 'unknown')} "
-                f"started_this_hour={scope.get('started_this_hour', 'unknown')} "
-                f"due_for_continuation={scope.get('due_for_continuation', 'unknown')} "
-                f"runtime_completed={scope.get('completed_runtime', 'unknown')} "
-                f"runtime_failed={scope.get('failed_runtime', 'unknown')} "
-                f"version_blocked={scope.get('version_blocked', 'unknown')} "
-                f"idle_until_next_hour={scope.get('idle_until_next_hour', 'unknown')} "
-                f"progress={scope.get('progress', 'unknown')} "
-                f"stalled={scope.get('stalled_count', 'unknown')} "
-                f"deferred={scope.get('deferred', False)} "
-                f"deferred_reason={scope.get('deferred_reason') or '-'} "
-                f"repo={scope.get('repo', 'unknown')} "
+                f"{agent_id}: status={agent.get('status', 'unknown')} "
+                f"repo={agent.get('repo', 'unknown')} "
+                f"progress={agent.get('progress', 'unknown')} "
+                f"lock_alive={lock.get('alive', 'unknown')} "
+                f"unit={lock.get('unit') or '-'} "
+                f"unit_active={unit_info.get('active', lock.get('unit_active', 'unknown'))}"
+            )
+            if risk:
+                lines.append(f"  风险: {risk}")
+
+    if legacy_records and not agents:
+        lines.append("")
+        lines.append("旧记录最终状态:")
+        for record_id, raw_record in sorted(legacy_records.items()):
+            record = raw_record if isinstance(raw_record, dict) else {}
+            action_count = len(record.get("actions", [])) if isinstance(record.get("actions"), list) else 0
+            lock = record.get("lock") if isinstance(record.get("lock"), dict) else {}
+            unit_info = lock.get("unit_info") if isinstance(lock.get("unit_info"), dict) else {}
+            risk = record_risk_description(record_id, record)
+            lines.append(
+                "- "
+                f"{record_id}: status={record.get('status', 'unknown')} "
+                f"progress={record.get('progress', 'unknown')} "
+                f"repo={record.get('repo', 'unknown')} "
                 f"lock_alive={lock.get('alive', 'unknown')} "
                 f"unit={lock.get('unit') or '-'} "
                 f"unit_active={unit_info.get('active', lock.get('unit_active', 'unknown'))} "
@@ -356,25 +469,22 @@ def build_body(root: Path, repos: tuple[str, ...]) -> str:
 
 
 def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: Path) -> str:
-    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    now = format_time_cn(None)
     watchdog = read_json(watchdog_summary_path)
-    repo_lines = [summarize_repo_brief(root, repo) for repo in repos]
     lines = [
         f"gotouhou {REPORT_INTERVAL_HOURS}小时开发简报",
         f"Generated: {now}",
         f"Workspace: {root}",
-        f"Watchdog summary: {watchdog_summary_path}",
+        f"Agent summary: {watchdog_summary_path}",
         "",
         "项目进度:",
         *minimal_watchdog_lines(watchdog),
         "",
         "服务器状态:",
-        *repo_lines,
+        *agent_status_lines(watchdog),
         "",
-        "下一步:",
-        "- 按 docs/dev 优先级继续 Phase 3：协议、Nakama/PostgreSQL、C++ BattleServer、SpellKard 在线 UI/验证。",
-        "- 正在运行的 `/goal` agent 不因汇报周期被打断。",
-        "- 简单线性改动不强制 PR；复杂/跨仓/回归/多路验证才走分支 PR。",
+        "审计 agent 汇报:",
+        *audited_update_lines(watchdog),
     ]
     return "\n".join(lines)
 
@@ -458,8 +568,8 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     root = Path(args.root).resolve()
     repos = tuple(args.repos) if args.repos else DEFAULT_REPOS
-    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    subject = f"[gotouhou] {REPORT_INTERVAL_HOURS}h development update {now}"
+    now = dt.datetime.now(UTC_PLUS_8).strftime("%Y-%m-%d %H:%M UTC+8")
+    subject = f"[gotouhou] {REPORT_INTERVAL_HOURS}小时开发简报 {now}"
     if args.brief:
         body = build_brief_body(root, repos, Path(args.watchdog_summary).resolve())
     else:
