@@ -1,0 +1,7 @@
+# Project manager PR drain 2200
+
+- Completed: synced project-manager docs worktree, diff-reviewed and squash-merged PhK-BattleServer #56, SpellKard #39, and Gensoulkyo #52; all merged PR branches were deleted.
+- Verification: `python3 -m py_compile docs/ops/goal_agent_manager.py docs/ops/hourly_progress_mail.py docs/ops/check_goal_agent_manager.py`; `python3 docs/ops/check_goal_agent_manager.py`; `python3 docs/ops/hourly_progress_mail.py --dry-run --brief`; `python3 docs/ops/goal_agent_manager.py --root /root/gotouhou`; `python3 docs/ops/protocol_audit_check.py --root /tmp/gotouhou-protocol-audit-pm` on clean main and again with Gensoulkyo #52 head.
+- Manager resample: generated_at=2026-06-30T21:59:01Z; pull_request_queue open=0 ready=0 needs_action=0; started_count=3; average health score=82 watch; low agent=nakama-server-agent.
+- Remaining risks: client-agent managed SpellKard worktree dirty=3 and upstream_gone; nakama-server-agent managed branch upstream_gone; Gensoulkyo root legacy branch dirty=4 needs owning-agent migration; PhK-BattleServer root main is ahead=2 behind=26 and must not be used as a baseline until battle-server-agent preserves or supersedes the local commits.
+- Next forced action: stop expanding feature work; owning agents must first switch merged/gone branches back to current main or persistent branches, compress logs, and resolve the listed dirty/ahead state.
