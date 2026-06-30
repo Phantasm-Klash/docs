@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -126,9 +127,79 @@ def check_agent_health_promotes_version_and_resource_risk() -> None:
     assert any("client-agent" in line and "score=" in line for line in mail_lines)
 
 
+def check_read_only_samples_do_not_persist_authoritative_state() -> None:
+    with tempfile.TemporaryDirectory(prefix="goal-agent-manager-check-") as tmp:
+        root = Path(tmp)
+        key_file = root / "keys"
+        key_file.write_text("other: dummy-local-test-key\n", encoding="utf-8")
+
+        original_collect_repo = goal_agent_manager.collect_repo
+        original_collect_pull_requests = goal_agent_manager.collect_pull_requests
+        original_collect_runtime = goal_agent_manager.collect_runtime
+        original_collect_legacy_agents = goal_agent_manager.collect_legacy_agents
+        original_prepare_worktree = goal_agent_manager.prepare_worktree
+        try:
+            goal_agent_manager.collect_repo = lambda root, name: {
+                "repo": name,
+                "path": str(root / name),
+                "branch": "main",
+                "head": "0000000",
+                "status": "## main...origin/main",
+                "dirty_count": 0,
+                "dirty": [],
+                "commits_last_interval": [],
+            }
+            goal_agent_manager.collect_pull_requests = lambda root, now: {
+                name: {
+                    "repo": name,
+                    "open_count": 0,
+                    "items": [],
+                    "status": 0,
+                    "collected_at": goal_agent_manager.iso(now),
+                    "error": "",
+                }
+                for name in goal_agent_manager.DEFAULT_REPOS
+            }
+            goal_agent_manager.collect_runtime = lambda root: {
+                "godot_linux": {"exists": False, "executable": False},
+                "docker": {"available": False, "docker_compose_available": False},
+            }
+            goal_agent_manager.collect_legacy_agents = lambda root: {
+                "old_roster_records": [],
+                "legacy_log_prefixes": [],
+            }
+            goal_agent_manager.prepare_worktree = lambda root, agent_id, agent, dry_run: {
+                "path": str(root / agent["repo"]),
+                "ready": True,
+                "repo": agent["repo"],
+                "branch": agent.get("branch") or "main",
+                "test_stub": True,
+                "dry_run": bool(dry_run),
+            }
+
+            for flag in ("--dry-run", "--no-start"):
+                summary = goal_agent_manager.build_summary(
+                    goal_agent_manager.parse_args(["--root", str(root), "--key-file", str(key_file), flag])
+                )
+
+                assert summary["read_only_sample"] is True
+                assert summary["started_count"] == 0
+                assert not (root / ".agents" / "goal-agent-summary.json").exists()
+                assert not (root / ".agents" / "last-watchdog-summary.json").exists()
+                assert not (root / ".agents" / "reports" / "audit-agent-latest.md").exists()
+                assert not (root / ".agents" / "reports" / "plan-audit-latest.md").exists()
+        finally:
+            goal_agent_manager.collect_repo = original_collect_repo
+            goal_agent_manager.collect_pull_requests = original_collect_pull_requests
+            goal_agent_manager.collect_runtime = original_collect_runtime
+            goal_agent_manager.collect_legacy_agents = original_collect_legacy_agents
+            goal_agent_manager.prepare_worktree = original_prepare_worktree
+
+
 def main() -> int:
     check_legacy_resource_risk_is_structured_not_managed()
     check_agent_health_promotes_version_and_resource_risk()
+    check_read_only_samples_do_not_persist_authoritative_state()
     print("check_goal_agent_manager ok")
     return 0
 
