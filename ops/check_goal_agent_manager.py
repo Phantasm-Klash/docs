@@ -126,6 +126,34 @@ def check_agent_health_promotes_version_and_resource_risk() -> None:
     assert any("client-agent" in line and "score=" in line for line in mail_lines)
 
 
+def check_recent_large_managed_log_keeps_resource_risk() -> None:
+    summary = goal_agent_manager.build_agent_resource_risk(
+        {
+            "client-agent": {
+                "repo": "SpellKard",
+                "status": "running",
+                "runtime_log": {"token_usage": None, "bytes": 8_000},
+                "recent_log_pressure": {
+                    "window_hours": goal_agent_manager.RECENT_LOG_PRESSURE_HOURS,
+                    "sample_count": 4,
+                    "max_bytes": goal_agent_manager.LOG_BYTES_HIGH_RISK + 10,
+                    "medium_count": 2,
+                    "high_count": 1,
+                },
+            }
+        },
+        {"old_roster_records": [], "legacy_log_prefixes": []},
+    )
+
+    item = summary["items"][0]
+    assert item["agent"] == "client-agent"
+    assert item["severity"] == "high"
+    assert item["recent_log_max_bytes"] > goal_agent_manager.LOG_BYTES_HIGH_RISK
+    assert item["recent_log_high_count"] == 1
+    assert any("recent_log_bytes" in reason for reason in item["reasons"])
+    assert "停止复制长日志" in item["action"]
+
+
 def check_pending_pr_checks_are_not_reported_as_branch_gate() -> None:
     priority, category, action = goal_agent_manager.classify_pull_request_action(
         {"mergeStateStatus": "BLOCKED"},
@@ -353,6 +381,7 @@ def check_no_start_is_non_authoritative() -> None:
 def main() -> int:
     check_legacy_resource_risk_is_structured_not_managed()
     check_agent_health_promotes_version_and_resource_risk()
+    check_recent_large_managed_log_keeps_resource_risk()
     check_pending_pr_checks_are_not_reported_as_branch_gate()
     check_dirty_repo_owner_prefers_active_workdir_agent()
     check_repo_state_actions_stop_legacy_dirty_expansion()

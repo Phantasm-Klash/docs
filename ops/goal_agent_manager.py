@@ -34,6 +34,7 @@ TOKEN_MEDIUM_RISK = 200_000
 TOKEN_HIGH_RISK = 500_000
 LOG_BYTES_MEDIUM_RISK = 1_000_000
 LOG_BYTES_HIGH_RISK = 3_000_000
+RECENT_LOG_PRESSURE_HOURS = REPORT_INTERVAL_HOURS
 LOG_SAMPLE_BYTES = 16_000
 LOG_DIAGNOSTIC_TAIL_CHARS = 400
 PROMPT_MAX_NEXT_ACTION_LINES = 6
@@ -496,6 +497,52 @@ def unit_active(unit: str | None) -> bool:
 def latest_log(root: Path, agent_id: str) -> Path | None:
     logs = sorted((root / ".agents" / "logs").glob(f"{agent_id}-*.log"), key=lambda item: item.stat().st_mtime)
     return logs[-1] if logs else None
+
+
+def collect_recent_log_pressure(root: Path, agent_id: str, now: dt.datetime) -> dict[str, Any]:
+    """Summarize recent managed-agent log sizes without reading log contents."""
+    logs_dir = root / ".agents" / "logs"
+    cutoff = now - dt.timedelta(hours=RECENT_LOG_PRESSURE_HOURS)
+    records: list[dict[str, Any]] = []
+    if not logs_dir.exists():
+        return {
+            "window_hours": RECENT_LOG_PRESSURE_HOURS,
+            "sample_count": 0,
+            "max_bytes": 0,
+            "medium_count": 0,
+            "high_count": 0,
+            "largest_log": "",
+            "largest_updated_at": "",
+        }
+    for path in logs_dir.glob(f"{agent_id}-*.log"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        updated_at = dt.datetime.fromtimestamp(stat.st_mtime, UTC)
+        if updated_at < cutoff:
+            continue
+        records.append({"path": str(path), "updated_at": iso(updated_at), "bytes": stat.st_size})
+    if not records:
+        return {
+            "window_hours": RECENT_LOG_PRESSURE_HOURS,
+            "sample_count": 0,
+            "max_bytes": 0,
+            "medium_count": 0,
+            "high_count": 0,
+            "largest_log": "",
+            "largest_updated_at": "",
+        }
+    largest = max(records, key=lambda item: int(item.get("bytes", 0) or 0))
+    return {
+        "window_hours": RECENT_LOG_PRESSURE_HOURS,
+        "sample_count": len(records),
+        "max_bytes": int(largest.get("bytes", 0) or 0),
+        "medium_count": sum(1 for item in records if int(item.get("bytes", 0) or 0) >= LOG_BYTES_MEDIUM_RISK),
+        "high_count": sum(1 for item in records if int(item.get("bytes", 0) or 0) >= LOG_BYTES_HIGH_RISK),
+        "largest_log": largest.get("path") or "",
+        "largest_updated_at": largest.get("updated_at") or "",
+    }
 
 
 def agent_runtime_log_path(root: Path, agent_id: str, lock: dict[str, Any]) -> Path | None:
@@ -1356,6 +1403,10 @@ def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) ->
         runtime_log = agent.get("runtime_log") if isinstance(agent.get("runtime_log"), dict) else {}
         token_usage = runtime_log.get("token_usage")
         log_bytes = int(runtime_log.get("bytes", 0) or 0)
+        recent_log_pressure = agent.get("recent_log_pressure") if isinstance(agent.get("recent_log_pressure"), dict) else {}
+        recent_max_bytes = int(recent_log_pressure.get("max_bytes", 0) or 0)
+        recent_high_count = int(recent_log_pressure.get("high_count", 0) or 0)
+        recent_medium_count = int(recent_log_pressure.get("medium_count", 0) or 0)
         severity = "low"
         reasons: list[str] = []
         action = "keep normal slice size"
@@ -1381,6 +1432,15 @@ def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) ->
             reasons.append(f"log_bytes>={LOG_BYTES_MEDIUM_RISK}")
             action = "trim report/log tails and prefer structured status fields"
 
+        if recent_max_bytes >= LOG_BYTES_HIGH_RISK:
+            severity = "high"
+            reasons.append(f"recent_log_bytes>={LOG_BYTES_HIGH_RISK}")
+            action = "停止复制长日志；只汇总检查结果、PR 状态和关键错误"
+        elif recent_max_bytes >= LOG_BYTES_MEDIUM_RISK and severity == "low":
+            severity = "medium"
+            reasons.append(f"recent_log_bytes>={LOG_BYTES_MEDIUM_RISK}")
+            action = "trim report/log tails and prefer structured status fields"
+
         if not reasons:
             reasons.append("within_current_thresholds")
         items.append(
@@ -1391,6 +1451,9 @@ def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) ->
                 "severity": severity,
                 "token_usage": token_usage,
                 "log_bytes": log_bytes,
+                "recent_log_max_bytes": recent_max_bytes,
+                "recent_log_high_count": recent_high_count,
+                "recent_log_medium_count": recent_medium_count,
                 "reasons": reasons,
                 "action": action,
             }
@@ -1422,6 +1485,7 @@ def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) ->
             "token_high": TOKEN_HIGH_RISK,
             "log_bytes_medium": LOG_BYTES_MEDIUM_RISK,
             "log_bytes_high": LOG_BYTES_HIGH_RISK,
+            "recent_log_pressure_hours": RECENT_LOG_PRESSURE_HOURS,
         },
         "high_count": sum(1 for item in managed_items if item.get("severity") == "high"),
         "medium_count": sum(1 for item in managed_items if item.get("severity") == "medium"),
@@ -1534,6 +1598,9 @@ def build_next_agent_actions(
                 "evidence": {
                     "token_usage": item.get("token_usage"),
                     "log_bytes": item.get("log_bytes"),
+                    "recent_log_max_bytes": item.get("recent_log_max_bytes"),
+                    "recent_log_high_count": item.get("recent_log_high_count"),
+                    "recent_log_medium_count": item.get("recent_log_medium_count"),
                     "reasons": item.get("reasons"),
                 },
             }
@@ -2023,6 +2090,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             "key_available": key_assignment.get("available"),
             "lock": lock,
             "runtime_log": log,
+            "recent_log_pressure": collect_recent_log_pressure(root, agent_id, now),
             "status": status,
             "progress": bool(lock.get("alive") or log.get("bytes", 0) or (result or {}).get("started")),
             "reason": reason,
