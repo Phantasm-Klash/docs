@@ -22,6 +22,7 @@ from pathlib import Path
 
 DEFAULT_REPOS = ("docs", "SpellKard", "Gensoulkyo", "PhK-BattleServer", "PhK-Protocol")
 DEFAULT_WATCHDOG_SUMMARY = "/root/gotouhou/.agents/last-watchdog-summary.json"
+DEFAULT_AUDIT_REPORT = "/root/gotouhou/.agents/reports/audit-agent-latest.md"
 REPORT_INTERVAL_HOURS = 3
 PROJECT_COMPLETION_PERCENT = 38
 UTC_PLUS_8 = dt.timezone(dt.timedelta(hours=8))
@@ -284,6 +285,23 @@ def audited_update_lines(summary: dict[str, object]) -> list[str]:
     return lines[:10]
 
 
+def latest_audit_report_lines(root: Path, summary: dict[str, object]) -> list[str]:
+    report_path = Path(DEFAULT_AUDIT_REPORT)
+    if not report_path.is_absolute():
+        report_path = root / report_path
+    text = ""
+    try:
+        text = report_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    if not text:
+        reports = summary.get("reports") if isinstance(summary.get("reports"), dict) else {}
+        audit_report = reports.get("audit_report") if isinstance(reports.get("audit_report"), dict) else {}
+        text = str(audit_report.get("text", ""))
+    lines = section_lines_from_report(text, ("结论", "新 agent 状态", "Git 与版本风险", "下个三小时方向"), limit=10)
+    return lines or audited_update_lines(summary)
+
+
 def watchdog_lines(summary: dict[str, object]) -> list[str]:
     if not summary:
         return ["Watchdog: no summary file found"]
@@ -495,7 +513,7 @@ def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: 
         *agent_status_lines(watchdog),
         "",
         "审计 agent 汇报:",
-        *audited_update_lines(watchdog),
+        *latest_audit_report_lines(root, watchdog),
     ]
     return "\n".join(lines)
 
