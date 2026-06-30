@@ -67,9 +67,44 @@ def check_pending_pr_checks_are_not_reported_as_branch_gate() -> None:
     assert action == "wait for required review/check gates or branch protection"
 
 
+def check_dirty_repo_owner_prefers_active_workdir_agent() -> None:
+    repo_path = str(Path("/tmp/gotouhou-docs-root").resolve())
+    summary = goal_agent_manager.build_repo_state_risk(
+        {
+            "docs": {
+                "repo": "docs",
+                "path": repo_path,
+                "branch": "main",
+                "head": "abc123",
+                "status": "## main...origin/main\n M ops/goal_agent_manager.py",
+                "dirty_count": 1,
+                "dirty": [" M ops/goal_agent_manager.py"],
+            }
+        },
+        {
+            "audit-agent": {
+                "repo": "docs",
+                "status": "running",
+                "workdir": repo_path,
+            },
+            "project-manager-agent": {
+                "repo": "docs",
+                "status": "running",
+                "workdir": str(Path("/tmp/gotouhou-pm-docs").resolve()),
+            },
+        },
+    )
+
+    assert summary["count"] == 1
+    assert summary["items"][0]["category"] == "dirty_worktree"
+    assert summary["items"][0]["owner_agent"] == "audit-agent"
+    assert summary["by_owner_agent"] == {"audit-agent": 1}
+
+
 def main() -> int:
     check_legacy_resource_risk_is_structured_not_managed()
     check_pending_pr_checks_are_not_reported_as_branch_gate()
+    check_dirty_repo_owner_prefers_active_workdir_agent()
     print("check_goal_agent_manager ok")
     return 0
 

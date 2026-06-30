@@ -517,7 +517,32 @@ def expected_repo_branches(repo_name: str) -> set[str]:
     return branches
 
 
-def build_repo_state_risk(repos: dict[str, Any]) -> dict[str, Any]:
+def active_repo_workdir_owner(repo: dict[str, Any], agents: dict[str, Any]) -> str:
+    repo_path = str(repo.get("path") or "")
+    if not repo_path:
+        return ""
+    try:
+        resolved_repo_path = str(Path(repo_path).resolve())
+    except OSError:
+        resolved_repo_path = repo_path
+    for agent_id, raw_agent in sorted(agents.items()):
+        agent = raw_agent if isinstance(raw_agent, dict) else {}
+        if agent.get("status") != "running":
+            continue
+        workdir = str(agent.get("workdir") or "")
+        if not workdir:
+            continue
+        try:
+            resolved_workdir = str(Path(workdir).resolve())
+        except OSError:
+            resolved_workdir = workdir
+        if resolved_workdir == resolved_repo_path:
+            return agent_id
+    return ""
+
+
+def build_repo_state_risk(repos: dict[str, Any], agents: dict[str, Any] | None = None) -> dict[str, Any]:
+    active_agents = agents or {}
     items: list[dict[str, Any]] = []
     by_repo: dict[str, int] = {}
     by_agent: dict[str, int] = {}
@@ -541,7 +566,7 @@ def build_repo_state_risk(repos: dict[str, Any]) -> dict[str, Any]:
             continue
 
         branch = str(repo.get("branch") or "")
-        owner = repo_owner_agent(repo_name, branch)
+        owner = active_repo_workdir_owner(repo, active_agents) or repo_owner_agent(repo_name, branch)
         dirty_count = int(repo.get("dirty_count", 0) or 0)
         branch_info = repo_status_branch_info(repo.get("status"))
         ahead = int(branch_info.get("ahead", 0) or 0)
@@ -1657,7 +1682,6 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     previous = read_json(agents_dir / "goal-agent-summary.json", {})
 
     repos = {name: collect_repo(root, name) for name in DEFAULT_REPOS}
-    repo_state_risk = build_repo_state_risk(repos)
     pull_requests = collect_pull_requests(root, now)
     pull_request_queue = build_pull_request_queue(pull_requests)
     runtime = collect_runtime(root)
@@ -1718,6 +1742,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             "progress": bool(lock.get("alive") or log.get("bytes", 0) or (result or {}).get("started")),
             "reason": reason,
         }
+    repo_state_risk = build_repo_state_risk(repos, agents)
     agent_resource_risk = build_agent_resource_risk(agents, legacy_agents)
     next_agent_actions = build_next_agent_actions(pull_request_queue, agent_resource_risk, repo_state_risk)
 
