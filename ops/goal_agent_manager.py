@@ -547,6 +547,37 @@ def previous_health_prompt(agent_id: str, previous: dict[str, Any]) -> str:
     )
 
 
+def previous_resource_output_limit_prompt(agent_id: str, previous: dict[str, Any]) -> str:
+    next_actions = previous.get("next_agent_actions") if isinstance(previous.get("next_agent_actions"), dict) else {}
+    items = next_actions.get("items") if isinstance(next_actions.get("items"), list) else []
+    severities = {"high": 2, "medium": 1}
+    best_item: dict[str, Any] | None = None
+    best_rank = 0
+    for raw_item in items:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        if item.get("category") != "resource_risk":
+            continue
+        if agent_id != "project-manager-agent" and item.get("agent") != agent_id:
+            continue
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        severity = str(evidence.get("severity") or "").lower()
+        rank = severities.get(severity, 0)
+        if rank > best_rank:
+            best_item = item
+            best_rank = rank
+    if not best_item:
+        return "- 当前没有中高资源风险行动项；仍只写结构化摘要，不粘贴长日志、完整 diff 或完整测试输出。"
+    evidence = best_item.get("evidence") if isinstance(best_item.get("evidence"), dict) else {}
+    severity = prompt_clip(evidence.get("severity"), 24)
+    repo = prompt_clip(best_item.get("repo"), 64)
+    action = prompt_clip(best_item.get("action"), 160)
+    return (
+        "- "
+        f"当前 {severity} 资源风险 repo={repo}：{action}；"
+        "本轮 final 限 3-5 行，只列检查命令与结果、PR/branch 状态、失败命令、首个关键错误、下一步动作。"
+    )
+
+
 def agent_prompt(agent_id: str, agent: dict[str, Any], persona_path: Path, workdir: Path, key_assignment: dict[str, Any], previous: dict[str, Any]) -> str:
     return f"""你现在是 `{agent_id}`，必须按 Codex `/goal` 持续目标模式工作。
 
@@ -576,6 +607,7 @@ Manager 下一步行动提示：
 日志/输出约束：
 - 不要 `cat`、复制或粘贴长日志、完整测试输出、完整 diff、完整 JSON；读取日志只用 bounded tail、结构化摘要或关键错误检索。
 - 中高资源风险时，本轮只写 3-5 行关键结论：检查命令与结果、PR/branch 状态、失败命令、首个关键错误、下一步动作。
+{previous_resource_output_limit_prompt(agent_id, previous)}
 
 不要只写计划后退出；完成一个小切片后继续迭代下一个小切片。只有模型容量、网络、权限、branch protection、依赖下载或测试环境硬阻塞时，才写清非敏感原因并退出，等待 manager 检测状态后补救。
 """
