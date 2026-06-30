@@ -1041,6 +1041,116 @@ def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) ->
     }
 
 
+def build_next_agent_actions(pull_request_queue: dict[str, Any], resource_risk: dict[str, Any]) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+
+    for raw_group in pull_request_queue.get("supersede_groups", []):
+        group = raw_group if isinstance(raw_group, dict) else {}
+        repo = str(group.get("repo") or "unknown")
+        owner = str(group.get("owner_agent") or "project-manager-agent")
+        items.append(
+            {
+                "agent": owner,
+                "repo": repo,
+                "priority": 5,
+                "category": "pr_supersede_group",
+                "summary": f"{repo} stale PR group count={group.get('count')} prs={group.get('numbers')}",
+                "action": str(group.get("action") or "consolidate stale pull requests"),
+                "evidence": {
+                    "numbers": group.get("numbers"),
+                    "merge_states": group.get("merge_states"),
+                    "action_categories": group.get("action_categories"),
+                },
+            }
+        )
+
+    for raw_item in pull_request_queue.get("top_items", []):
+        item = raw_item if isinstance(raw_item, dict) else {}
+        category = str(item.get("action_category") or "")
+        if category not in {"resolve_conflicts", "update_branch", "fix_checks", "wait_checks", "blocked_gate", "inspect"}:
+            continue
+        repo = str(item.get("repo") or "unknown")
+        items.append(
+            {
+                "agent": str(item.get("owner_agent") or "project-manager-agent"),
+                "repo": repo,
+                "priority": int(item.get("priority", 50) or 50),
+                "category": category,
+                "summary": f"{repo} #{item.get('number')} {item.get('merge_state')} {item.get('title')}",
+                "action": str(item.get("action") or "inspect pull request"),
+                "evidence": {"url": item.get("url"), "checks": item.get("checks"), "head": item.get("head")},
+            }
+        )
+
+    for raw_item in pull_request_queue.get("merge_ready_items", []):
+        item = raw_item if isinstance(raw_item, dict) else {}
+        gate = item.get("review_gate") if isinstance(item.get("review_gate"), dict) else {}
+        repo = str(item.get("repo") or "unknown")
+        if gate.get("required"):
+            priority = 35
+            category = str(gate.get("category") or "review_gate")
+            action = "diff-review the PR, verify protocol/security evidence, then merge or request fixes"
+        else:
+            priority = 55
+            category = "merge_ready_review"
+            action = "final review, merge, and sync the owning persistent branch"
+        items.append(
+            {
+                "agent": str(item.get("owner_agent") or "project-manager-agent"),
+                "repo": repo,
+                "priority": priority,
+                "category": category,
+                "summary": f"{repo} #{item.get('number')} merge-ready {item.get('title')}",
+                "action": action,
+                "evidence": {"url": item.get("url"), "checks": item.get("checks"), "review_gate": gate},
+            }
+        )
+
+    for raw_item in resource_risk.get("top_items", []):
+        item = raw_item if isinstance(raw_item, dict) else {}
+        agent = str(item.get("agent") or "")
+        if not agent or agent == "legacy-agent-roster":
+            continue
+        items.append(
+            {
+                "agent": agent,
+                "repo": str(item.get("repo") or "unknown"),
+                "priority": 80 if item.get("severity") == "high" else 90,
+                "category": "resource_risk",
+                "summary": f"{agent} {item.get('severity')} resource risk",
+                "action": str(item.get("action") or "keep the next iteration small"),
+                "evidence": {
+                    "token_usage": item.get("token_usage"),
+                    "log_bytes": item.get("log_bytes"),
+                    "reasons": item.get("reasons"),
+                },
+            }
+        )
+
+    items.sort(
+        key=lambda item: (
+            int(item.get("priority", 99) or 99),
+            str(item.get("agent") or ""),
+            str(item.get("repo") or ""),
+            str(item.get("summary") or ""),
+        )
+    )
+    by_agent: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+    for item in items:
+        agent = str(item.get("agent") or "unknown")
+        category = str(item.get("category") or "unknown")
+        by_agent[agent] = by_agent.get(agent, 0) + 1
+        by_category[category] = by_category.get(category, 0) + 1
+    return {
+        "count": len(items),
+        "by_agent": by_agent,
+        "by_category": by_category,
+        "items": items,
+        "top_items": items[:10],
+    }
+
+
 def build_audit_report(summary: dict[str, Any]) -> str:
     agents = summary.get("agents") if isinstance(summary.get("agents"), dict) else {}
     repos = summary.get("repos") if isinstance(summary.get("repos"), dict) else {}
@@ -1050,6 +1160,7 @@ def build_audit_report(summary: dict[str, Any]) -> str:
     pull_requests = summary.get("pull_requests") if isinstance(summary.get("pull_requests"), dict) else {}
     pull_request_queue = summary.get("pull_request_queue") if isinstance(summary.get("pull_request_queue"), dict) else {}
     resource_risk = summary.get("agent_resource_risk") if isinstance(summary.get("agent_resource_risk"), dict) else {}
+    next_actions = summary.get("next_agent_actions") if isinstance(summary.get("next_agent_actions"), dict) else {}
 
     active = [agent_id for agent_id, agent in agents.items() if isinstance(agent, dict) and agent.get("status") == "running"]
     failed = [agent_id for agent_id, agent in agents.items() if isinstance(agent, dict) and agent.get("status") == "failed"]
@@ -1159,6 +1270,25 @@ def build_audit_report(summary: dict[str, Any]) -> str:
                 f"{item.get('agent')} {item.get('severity')} tokens={token_text} "
                 f"log_bytes={item.get('log_bytes')} action={item.get('action')}"
             )
+    next_action_lines = [
+        (
+            "- 下一步行动项："
+            f"count={next_actions.get('count', 0)}；"
+            f"by_agent={next_actions.get('by_agent', {})}；"
+            f"by_category={next_actions.get('by_category', {})}。"
+        )
+    ]
+    for item in next_actions.get("top_items", [])[:8]:
+        if isinstance(item, dict):
+            evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+            url = evidence.get("url")
+            url_text = f" {url}" if url else ""
+            next_action_lines.append(
+                "- "
+                f"{item.get('agent')} -> {item.get('repo')} priority={item.get('priority')} "
+                f"category={item.get('category')} action={item.get('action')} "
+                f"summary={item.get('summary')}{url_text}"
+            )
 
     return "\n".join(
         [
@@ -1189,6 +1319,10 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             *pr_queue_lines,
             "- 新 agent 使用独立 worktree/工作目录，避免直接覆盖旧 agent 未提交内容；审计 agent 继续判断旧 dirty work 是否应整理成 PR 或废弃。",
             "- 简单线性改动可阶段性提交；跨仓、协议/网络/安全、回归修复和并行开发必须 branch + PR。",
+            "",
+            "## 下一步行动",
+            "",
+            *next_action_lines,
             "",
             "## 回归与环境",
             "",
@@ -1281,6 +1415,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             "reason": reason,
         }
     agent_resource_risk = build_agent_resource_risk(agents, legacy_agents)
+    next_agent_actions = build_next_agent_actions(pull_request_queue, agent_resource_risk)
 
     summary = {
         "version": 2,
@@ -1298,6 +1433,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         "regression": regression,
         "legacy_agents": legacy_agents,
         "agent_resource_risk": agent_resource_risk,
+        "next_agent_actions": next_agent_actions,
         "agents": agents,
         "actions": actions,
         "action_count": len(actions),
