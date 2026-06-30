@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -101,10 +102,44 @@ def check_dirty_repo_owner_prefers_active_workdir_agent() -> None:
     assert summary["by_owner_agent"] == {"audit-agent": 1}
 
 
+def check_mail_summary_falls_back_when_primary_is_invalid() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        tmp = Path(raw_tmp)
+        primary = tmp / "goal-agent-summary.json"
+        fallback = tmp / "last-watchdog-summary.json"
+        primary.write_text("{bad json", encoding="utf-8")
+        fallback.write_text(
+            """
+{
+  "generated_at": "2026-06-30T12:00:00Z",
+  "agents": {
+    "client-agent": {"status": "running", "repo": "SpellKard"}
+  },
+  "regression": {"ok": true, "failed_count": 0},
+  "pull_request_queue": {"open_count": 0, "needs_action_count": 0, "ready_count": 0}
+}
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        original_fallback = hourly_progress_mail.LEGACY_WATCHDOG_SUMMARY
+        try:
+            hourly_progress_mail.LEGACY_WATCHDOG_SUMMARY = str(fallback)
+            selected, summary = hourly_progress_mail.load_summary_with_fallback(primary)
+        finally:
+            hourly_progress_mail.LEGACY_WATCHDOG_SUMMARY = original_fallback
+
+    assert selected == fallback
+    assert summary["generated_at"] == "2026-06-30T12:00:00Z"
+    assert "client-agent" in summary["agents"]
+
+
 def main() -> int:
     check_legacy_resource_risk_is_structured_not_managed()
     check_pending_pr_checks_are_not_reported_as_branch_gate()
     check_dirty_repo_owner_prefers_active_workdir_agent()
+    check_mail_summary_falls_back_when_primary_is_invalid()
     print("check_goal_agent_manager ok")
     return 0
 
