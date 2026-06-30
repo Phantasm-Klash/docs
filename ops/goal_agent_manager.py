@@ -127,7 +127,8 @@ AGENTS: dict[str, dict[str, Any]] = {
             "docs/ops",
         ),
         "checks": (
-            "python3 -m py_compile docs/ops/goal_agent_manager.py docs/ops/hourly_progress_mail.py",
+            "python3 -m py_compile docs/ops/goal_agent_manager.py docs/ops/hourly_progress_mail.py docs/ops/check_goal_agent_manager.py",
+            "python3 docs/ops/check_goal_agent_manager.py",
             "python3 docs/ops/goal_agent_manager.py --dry-run --root /root/gotouhou",
         ),
         "mission": (
@@ -148,7 +149,8 @@ AGENTS: dict[str, dict[str, Any]] = {
             "docs/ops/goal_agent_manager.py",
         ),
         "checks": (
-            "python3 -m py_compile docs/ops/goal_agent_manager.py docs/ops/hourly_progress_mail.py",
+            "python3 -m py_compile docs/ops/goal_agent_manager.py docs/ops/hourly_progress_mail.py docs/ops/check_goal_agent_manager.py",
+            "python3 docs/ops/check_goal_agent_manager.py",
             "python3 docs/ops/goal_agent_manager.py --dry-run --root /root/gotouhou --no-start",
             "python3 docs/ops/hourly_progress_mail.py --dry-run --brief",
         ),

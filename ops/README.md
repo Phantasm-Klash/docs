@@ -108,6 +108,7 @@ risk, and next priorities.
 Dry run:
 
 ```sh
+python3 ops/check_goal_agent_manager.py
 python3 ops/goal_agent_manager.py --dry-run
 python3 ops/hourly_progress_mail.py --dry-run
 ```
