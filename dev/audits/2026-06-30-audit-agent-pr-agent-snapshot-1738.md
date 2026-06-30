@@ -14,13 +14,14 @@
 - 最新结构化健康分：average=92，low=[]；上一轮健康为 score=100/healthy，本轮仍无硬阻塞。
 - 资源风险：dry-run 复采样显示 battle-server-agent 已正常退出但上轮 token_usage=1138700，为 high；nakama-server-agent 已正常退出但 token_usage=362642，为 medium。下一轮应缩小切片、只写结论/提交/PR/测试/阻塞。
 - 版本风险：Gensoulkyo root checkout 仍在 legacy 分支 `agent/gensoulkyo-lobby/20260629-0900` 且有 4 个未提交项；PhK-BattleServer root checkout 仍在 legacy 分支 `agent/phk-battle-server/20260629-0030`；SpellKard root checkout `main` 落后 origin/main 4 个提交。
-- docs 仓库当前有 `ops/check_goal_agent_manager.py`、`ops/goal_agent_manager.py` 未提交改动；这些不是本审计切片产生的改动，本提交不接管。
+- docs 主 worktree 已提交并推送本审计快照 `7563c4c`；推送时 GitHub 报告绕过 main 保护规则，后续 docs 改动应优先走 PR 与 required checks。
 
 ## PR 审计
 
 - SpellKard #26 `Expose boss practice replay verification row`：CLEAN，2/2 checks success。diff 增加 Replay 列表 Boss spellbook practice 本地验证摘要、拒绝服务端权威字段伪声明，并在 smoke test 覆盖 damage/reward/settlement 仍由服务端权威。建议人工读 diff 后合并；合并后同步 SpellKard root main。
 - Gensoulkyo #37 `Expose HTTP service callback contract status`：2/2 checks success，已于 2026-06-30T17:35:27Z 合并，merge commit `891b6a963d3d9937b10301a071edebaf1a671c9a`。diff 增加 `GET /v1/security/service-callback`，暴露 callback operations/context/header contract，且明确 player session 和 business envelope 不允许进入 service callback 路径。
-- 当前没有 Gensoulkyo、PhK-Protocol、PhK-BattleServer、docs open PR。
+- docs #54 `Flag recent large agent logs`：DIRTY，当前无 checks rollup。该 PR 来自 `agent/project-manager-agent/persistent`，包含大量历史 manager 提交与最新 recent-log-pressure 切片；建议 project-manager-agent 基于最新 main 重建窄 PR，或先 rebase/整理后再跑 `py_compile`、`check_goal_agent_manager.py`、`goal_agent_manager.py --dry-run --no-start`、`hourly_progress_mail.py --dry-run --brief`。
+- 当前没有 Gensoulkyo、PhK-Protocol、PhK-BattleServer open PR。
 
 ## 测试证据
 
@@ -33,4 +34,4 @@
 - client-agent：合并 #26 后先更新 SpellKard root `main`，再继续 Boss/Replay/UI 最小切片。
 - nakama-server-agent：先清理 Gensoulkyo legacy root dirty；#37 已合并，完成 legacy 清退前不扩展新业务切片。
 - battle-server-agent：继续推进 authoritative simulation/hash/replay/settlement signing，但压缩日志输出。
-- project-manager-agent：把 docs 当前 ops dirty 改动提交/开 PR 或写明废弃理由，避免 audit-agent 提交时混入。
+- project-manager-agent：收敛 docs #54；优先重建当前 base 的窄 PR，避免 persistent 分支把历史管理提交继续带入 review。
