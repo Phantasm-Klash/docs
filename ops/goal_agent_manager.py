@@ -409,10 +409,13 @@ def previous_next_action_prompt(agent_id: str, previous: dict[str, Any]) -> str:
         reasons = evidence.get("reasons") if isinstance(evidence.get("reasons"), list) else []
         reason_text = prompt_clip(",".join(str(reason) for reason in reasons[:3]), 96)
         reason_suffix = f" reasons={reason_text}" if reason_text else ""
+        severity = prompt_clip(evidence.get("severity") or "unknown", 24)
+        summary = prompt_clip(item.get("summary"), 96)
         lines.append(
             "- "
-            f"resource_limit priority={item.get('priority')} severity={prompt_clip(str(item.get('summary') or '').replace(agent_id + ' ', ''), 80)} "
-            f"repo={prompt_clip(item.get('repo'), 64)} action={prompt_clip(item.get('action'))}{reason_suffix}"
+            f"resource_limit priority={item.get('priority')} severity={severity} "
+            f"repo={prompt_clip(item.get('repo'), 64)} action={prompt_clip(item.get('action'))} "
+            f"summary={summary}{reason_suffix}"
         )
 
     for item in work_items:
@@ -1751,6 +1754,7 @@ def build_next_agent_actions(
                 "summary": f"{agent} {severity} resource risk",
                 "action": str(item.get("action") or "keep the next iteration small"),
                 "evidence": {
+                    "severity": severity,
                     "token_usage": item.get("token_usage"),
                     "log_bytes": item.get("log_bytes"),
                     "recent_log_max_bytes": item.get("recent_log_max_bytes"),
