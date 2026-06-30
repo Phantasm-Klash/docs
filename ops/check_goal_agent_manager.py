@@ -47,8 +47,88 @@ def check_legacy_resource_risk_is_structured_not_managed() -> None:
     assert not any("legacy-agent-roster" in line for line in mail_lines[1:])
 
 
+def check_agent_health_promotes_version_and_resource_risk() -> None:
+    agents = {
+        "client-agent": {
+            "repo": "SpellKard",
+            "status": "running",
+            "progress": True,
+            "key_available": True,
+        },
+        "battle-server-agent": {
+            "repo": "PhK-BattleServer",
+            "status": "running",
+            "progress": True,
+            "key_available": True,
+        },
+        "nakama-server-agent": {
+            "repo": "Gensoulkyo",
+            "status": "running",
+            "progress": True,
+            "key_available": True,
+        },
+        "audit-agent": {
+            "repo": "docs",
+            "status": "running",
+            "progress": True,
+            "key_available": True,
+        },
+        "project-manager-agent": {
+            "repo": "docs",
+            "status": "running",
+            "progress": True,
+            "key_available": True,
+        },
+    }
+    repo_state_risk = {
+        "items": [
+            {
+                "owner_agent": "client-agent",
+                "repo": "SpellKard",
+                "priority": 16,
+                "category": "local_ahead",
+                "action": "push or convert the local commits into a current-base PR",
+            }
+        ]
+    }
+    pull_request_queue = {"items": []}
+    resource_risk = {
+        "items": [
+            {
+                "agent": "client-agent",
+                "repo": "SpellKard",
+                "severity": "high",
+                "action": "split next work into a smaller PR-ready slice",
+            }
+        ]
+    }
+    next_actions = {
+        "items": [
+            {
+                "agent": "client-agent",
+                "action": "push or convert the local commits into a current-base PR",
+            }
+        ]
+    }
+
+    health = goal_agent_manager.build_agent_health(
+        agents,
+        repo_state_risk,
+        pull_request_queue,
+        resource_risk,
+        next_actions,
+    )
+
+    assert health["agents"]["client-agent"]["score"] < health["agents"]["battle-server-agent"]["score"]
+    assert "client-agent" not in health["low_score_agents"]
+    assert any("资源风险 high" in reason for reason in health["agents"]["client-agent"]["reasons"])
+    mail_lines = hourly_progress_mail.agent_health_lines({"agent_health": health})
+    assert any("client-agent" in line and "score=" in line for line in mail_lines)
+
+
 def main() -> int:
     check_legacy_resource_risk_is_structured_not_managed()
+    check_agent_health_promotes_version_and_resource_risk()
     print("check_goal_agent_manager ok")
     return 0
 

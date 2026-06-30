@@ -75,6 +75,13 @@ def bool_cn(value: object) -> str:
     return str(value)
 
 
+def short_text(value: object, max_chars: int = 120) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
 def record_risk_description(record_id: str, record: dict[str, object]) -> str:
     lock = record.get("lock") if isinstance(record.get("lock"), dict) else {}
     log = record.get("log") if isinstance(record.get("log"), dict) else {}
@@ -183,7 +190,7 @@ def minimal_watchdog_lines(summary: dict[str, object]) -> list[str]:
             f"（needs_action={pull_request_queue.get('needs_action_count', 'unknown')}，"
             f"ready={pull_request_queue.get('ready_count', 'unknown')}）"
         )
-    return [
+    lines = [
         f"- 生成时间：{format_time_cn(summary.get('generated_at'))}",
         f"- 整体完成度：约 {PROJECT_COMPLETION_PERCENT}%。",
         "- 当前阶段：Phase 3，服务器权威在线 MVP 与服务拆分收敛。",
@@ -192,6 +199,10 @@ def minimal_watchdog_lines(summary: dict[str, object]) -> list[str]:
         f"- Failed/blocked agent：{', '.join(sorted(failed_or_blocked)) if failed_or_blocked else '无'}。",
         f"- Open PR：{pr_text}；manager actions={len(actions)}；本轮启动={summary.get('started_count', 0)}。",
     ]
+    if summary.get("read_only_sample"):
+        reason = summary.get("non_authoritative_reason") or "read-only sample"
+        lines.append(f"- 注意：当前输入是只读采样，不是权威 watchdog 状态；{reason}。")
+    return lines
 
 
 def pull_request_summary_text(pull_requests: dict[str, object]) -> str:
@@ -312,9 +323,12 @@ def agent_status_lines(summary: dict[str, object]) -> list[str]:
     records = agents or scopes
     if not records:
         return ["- 未读取到 agent 状态。"]
+    health = summary.get("agent_health") if isinstance(summary.get("agent_health"), dict) else {}
+    health_agents = health.get("agents") if isinstance(health.get("agents"), dict) else {}
     lines: list[str] = []
     for agent_id, raw_agent in sorted(records.items()):
         agent = raw_agent if isinstance(raw_agent, dict) else {}
+        health_item = health_agents.get(agent_id) if isinstance(health_agents.get(agent_id), dict) else {}
         lock = agent.get("lock") if isinstance(agent.get("lock"), dict) else {}
         runtime_log = agent.get("runtime_log") if isinstance(agent.get("runtime_log"), dict) else {}
         token_usage = runtime_log.get("token_usage")
@@ -329,9 +343,43 @@ def agent_status_lines(summary: dict[str, object]) -> list[str]:
             state = "失败"
         deferred = agent.get("deferred_reason") if agent.get("deferred") else ""
         extra = f"；暂缓：{deferred}" if deferred else ""
+        score_text = ""
+        if health_item:
+            score_text = f"；score={health_item.get('score', 'unknown')}({health_item.get('label', 'unknown')})"
         lines.append(
             f"- {agent_id}：{state}；repo={agent.get('repo', 'unknown')}；"
-            f"tokens={token_text}；耗时={elapsed}；progress={bool_cn(agent.get('progress'))}{extra}"
+            f"tokens={token_text}；耗时={elapsed}；progress={bool_cn(agent.get('progress'))}{score_text}{extra}"
+        )
+    return lines
+
+
+def agent_health_lines(summary: dict[str, object], *, limit: int = 5) -> list[str]:
+    health = summary.get("agent_health") if isinstance(summary.get("agent_health"), dict) else {}
+    if not health:
+        return ["- 未读取到 agent 健康评分；详见 agent 状态、资源风险和 PR 队列。"]
+    agents = health.get("agents") if isinstance(health.get("agents"), dict) else {}
+    lines = [
+        (
+            "- "
+            f"average={health.get('average_score', 'unknown')}；"
+            f"low={health.get('low_score_agents', [])}；"
+            f"model={health.get('model', 'unknown')}"
+        )
+    ]
+    ranked = sorted(
+        (item for item in agents.values() if isinstance(item, dict)),
+        key=lambda item: (int(item.get("score", 0) or 0), str(item.get("agent") or "")),
+    )
+    for item in ranked[:limit]:
+        reasons = item.get("reasons") if isinstance(item.get("reasons"), list) else []
+        actions = item.get("actions") if isinstance(item.get("actions"), list) else []
+        reason_text = "；".join(short_text(reason, 80) for reason in reasons[:3]) or "无"
+        action_text = "；".join(short_text(action, 80) for action in actions[:2]) or "继续推进"
+        lines.append(
+            "- "
+            f"{item.get('agent', 'unknown')}：score={item.get('score', 'unknown')}；"
+            f"label={item.get('label', 'unknown')}；status={item.get('status', 'unknown')}；"
+            f"原因={reason_text}；动作={action_text}"
         )
     return lines
 
@@ -714,6 +762,9 @@ def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: 
         "",
         "服务器状态:",
         *agent_status_lines(watchdog),
+        "",
+        "Agent 健康评分:",
+        *agent_health_lines(watchdog),
         "",
         "Agent 资源风险:",
         *agent_resource_risk_lines(watchdog),

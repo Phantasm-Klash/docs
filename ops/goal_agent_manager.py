@@ -157,7 +157,8 @@ AGENTS: dict[str, dict[str, Any]] = {
         "mission": (
             "作为项目推进和自动调度 agent，持续读取 docs/dev 路线、各 agent 日志、git 状态、PR 状态、回归结果和阻塞项；"
             "把客户端、战斗服、Nakama、审计 agent 的下一步任务收敛成可执行小切片，必要时更新 persona/prompt，"
-            "推动阶段性 commit、branch/PR、测试和合并节奏。只按 agent 身份管理，不恢复 scope/路径分片概念。"
+            "推动阶段性 commit、branch/PR、测试和合并节奏。只管理调度、评分、提示词、审计和版本流程，"
+            "不得直接实现客户端/战斗服/Nakama 业务代码。只按 agent 身份管理，不恢复 scope/路径分片概念。"
         ),
     },
 }
@@ -268,6 +269,40 @@ def select_key_alias(agent: dict[str, Any], keyring: dict[str, str]) -> dict[str
     return {"alias": preferences[-1] if preferences else "", "available": False, "preferences": preferences}
 
 
+def agent_operating_limits(agent_id: str) -> str:
+    common = [
+        "- 每轮只推进一个可验证小切片；完成后先 commit/PR/记录测试，再继续下一个切片。",
+        "- 最终中文汇报控制在 40 行以内，只写完成内容、提交/PR、测试、阻塞和下一步，不粘贴长日志或大段 diff。",
+        "- 单次运行日志或 token 风险升高时立即收敛范围，优先提交已验证工作，不继续扩大任务。",
+        "- 发现本地 ahead、dirty、PR 冲突或检查失败时，优先整理版本流程，而不是继续堆新功能。",
+    ]
+    specific: dict[str, list[str]] = {
+        "client-agent": [
+            "- 不允许长期停留在 only-local ahead 状态；必须 push/开 PR，或在 final 中写明无法开 PR 的具体原因。",
+            "- 优先交付 headless 可验证的弹幕/玩法/协议合同，不把纯渲染失败误判为功能失败。",
+        ],
+        "battle-server-agent": [
+            "- C++ 战斗服只做短切片：房间生命周期、Boss 实例、输入窗口、Replay/hash、结算签名逐项收敛。",
+            "- 不复制长编译日志；`docker-compose` 和 protocol audit 只报告通过/失败摘要与关键错误。",
+        ],
+        "nakama-server-agent": [
+            "- 新增 Nakama 功能前先处理 Gensoulkyo 根 checkout 的 dirty/ahead/PR 风险，或明确迁移/废弃理由。",
+            "- 业务服只负责资格、队列、ticket、回调和审计；不得把高频战斗 tick 做成 Go 权威路径。",
+        ],
+        "audit-agent": [
+            "- 审计默认只读；如需修改 ops/report，使用 docs 独立分支或 worktree，避免覆盖开发 agent 的业务改动。",
+            "- `--no-start` 只能用于本地只读采样，不能把结果当成权威 watchdog 状态，不能写入 summary。",
+        ],
+        "project-manager-agent": [
+            "- 只做项目推进、调度、评分、提示词和版本流程管理；不得直接实现 client/battle/nakama 业务代码。",
+            "- 每轮读取 docs/dev、agent 日志、PR、回归和 git 状态，给低分 agent 写清下一步小切片、测试和 PR 要求。",
+            "- 可以修改 docs/ops 的 manager、邮件、提示词和队列逻辑；业务修复必须分派给对应 owning agent 或单独 fix agent。",
+            "- 只按 agent 身份管理，禁止恢复旧 scope/路径分片模型。",
+        ],
+    }
+    return "\n".join(common + specific.get(agent_id, []))
+
+
 def shell_export(name: str, value: str) -> str:
     return f"export {name}={shlex.quote(value)}"
 
@@ -275,6 +310,7 @@ def shell_export(name: str, value: str) -> str:
 def persona_text(agent_id: str, agent: dict[str, Any], workdir: Path, key_alias: str) -> str:
     docs = "\n".join(f"- `/root/gotouhou/{item}`" for item in agent.get("docs", ()))
     checks = "\n".join(f"- `{item}`" for item in agent.get("checks", ()))
+    limits = agent_operating_limits(agent_id)
     return f"""# {agent_id} 人格文档
 
 昵称：{agent["nickname"]}
@@ -296,6 +332,10 @@ Key alias：`{key_alias or "(missing)"}`
 - 提交或推送前使用对应 git lock，避免同仓并发。
 - 最终状态写到 `/root/gotouhou/.agents/logs/{agent_id}-final.md`。
 - 不泄露 `/root/.codex/keys`、SMTP 密码、token、私钥或任何原始凭据。
+
+## 运行约束
+
+{limits}
 
 ## 必读文档
 
@@ -366,6 +406,23 @@ def previous_next_action_prompt(agent_id: str, previous: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def previous_health_prompt(agent_id: str, previous: dict[str, Any]) -> str:
+    health = previous.get("agent_health") if isinstance(previous.get("agent_health"), dict) else {}
+    agents = health.get("agents") if isinstance(health.get("agents"), dict) else {}
+    item = agents.get(agent_id) if isinstance(agents.get(agent_id), dict) else {}
+    if not item:
+        return "- 尚无上一轮健康评分；本轮按 docs/dev 和当前仓库状态建立基线。"
+    reasons = item.get("reasons") if isinstance(item.get("reasons"), list) else []
+    actions = item.get("actions") if isinstance(item.get("actions"), list) else []
+    reason_text = "；".join(prompt_clip(reason, 120) for reason in reasons[:4]) or "无扣分原因"
+    action_text = "；".join(prompt_clip(action, 120) for action in actions[:4]) or "继续推进最小可验证切片"
+    return (
+        "- "
+        f"score={item.get('score', 'unknown')} label={item.get('label', 'unknown')}；"
+        f"扣分/状态：{reason_text}；建议动作：{action_text}"
+    )
+
+
 def agent_prompt(agent_id: str, agent: dict[str, Any], persona_path: Path, workdir: Path, key_assignment: dict[str, Any], previous: dict[str, Any]) -> str:
     return f"""你现在是 `{agent_id}`，必须按 Codex `/goal` 持续目标模式工作。
 
@@ -380,6 +437,9 @@ Key alias：`{key_assignment.get("alias") or "(missing)"}`。原始 key 只由 r
 
 Manager 下一步行动提示：
 {previous_next_action_prompt(agent_id, previous)}
+
+上一轮推进健康评分：
+{previous_health_prompt(agent_id, previous)}
 
 强制流程：
 1. 读取人格文档列出的 docs/dev 路线和当前仓库代码。
@@ -1046,7 +1106,7 @@ def start_agent(
     if not key_assignment.get("available"):
         return {"started": False, "reason": "missing-key-alias", "key_alias": key_alias}
     if dry_run:
-        return {"started": False, "reason": "dry-run", "key_alias": key_alias}
+        return {"started": False, "reason": "read-only-sample", "would_start": True, "key_alias": key_alias}
     now = utcnow()
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
     agents_dir = root / ".agents"
@@ -1240,7 +1300,7 @@ def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) ->
             elif token_usage >= TOKEN_MEDIUM_RISK:
                 severity = "medium"
                 reasons.append(f"last_run_tokens>={TOKEN_MEDIUM_RISK}")
-                action = "shorten the next iteration and commit before expanding scope"
+                action = "shorten the next iteration and commit before expanding the task"
         elif agent.get("status") == "running":
             reasons.append("running_without_final_token_sample")
 
@@ -1435,6 +1495,154 @@ def build_next_agent_actions(
     }
 
 
+def health_label(score: int) -> str:
+    if score >= 85:
+        return "healthy"
+    if score >= 70:
+        return "watch"
+    if score >= 50:
+        return "needs_correction"
+    return "blocked"
+
+
+def build_agent_health(
+    agents: dict[str, Any],
+    repo_state_risk: dict[str, Any],
+    pull_request_queue: dict[str, Any],
+    resource_risk: dict[str, Any],
+    next_actions: dict[str, Any],
+) -> dict[str, Any]:
+    """Score each sustained agent so the manager can steer without scope heuristics."""
+    repo_items_by_agent: dict[str, list[dict[str, Any]]] = {}
+    for raw_item in repo_state_risk.get("items", []):
+        item = raw_item if isinstance(raw_item, dict) else {}
+        owner = str(item.get("owner_agent") or "")
+        if owner:
+            repo_items_by_agent.setdefault(owner, []).append(item)
+
+    pr_items_by_agent: dict[str, list[dict[str, Any]]] = {}
+    for raw_item in pull_request_queue.get("items", []):
+        item = raw_item if isinstance(raw_item, dict) else {}
+        owner = str(item.get("owner_agent") or "")
+        if owner:
+            pr_items_by_agent.setdefault(owner, []).append(item)
+
+    resource_by_agent: dict[str, dict[str, Any]] = {}
+    for raw_item in resource_risk.get("items", []):
+        item = raw_item if isinstance(raw_item, dict) else {}
+        agent = str(item.get("agent") or "")
+        if agent:
+            resource_by_agent[agent] = item
+
+    next_by_agent: dict[str, list[dict[str, Any]]] = {}
+    for raw_item in next_actions.get("items", []):
+        item = raw_item if isinstance(raw_item, dict) else {}
+        agent = str(item.get("agent") or "")
+        if agent:
+            next_by_agent.setdefault(agent, []).append(item)
+
+    scored: dict[str, Any] = {}
+    for agent_id in MANAGED_AGENT_IDS:
+        raw_agent = agents.get(agent_id) if isinstance(agents.get(agent_id), dict) else {}
+        status = str(raw_agent.get("status") or "unknown")
+        score = 100
+        reasons: list[str] = []
+        actions: list[str] = []
+
+        if status == "running":
+            reasons.append("goal agent 正在运行")
+        elif status == "completed":
+            score -= 8
+            reasons.append("agent 正常退出，持续目标需要 supervisor 继续拉起")
+            actions.append("等待 15 分钟 supervisor 或手动触发 manager 补启")
+        elif status in {"failed", "stopped"}:
+            score -= 35
+            reasons.append(f"agent 状态为 {status}")
+            actions.append("检查 runtime log，修复失败后补启")
+        else:
+            score -= 25
+            reasons.append(f"agent 状态未知或缺失：{status}")
+            actions.append("由 manager 补启缺失 agent")
+
+        if not raw_agent.get("key_available", True):
+            score -= 30
+            reasons.append("缺少可用 key alias")
+            actions.append("修复 /root/.codex/keys 中该 agent 的 alias")
+
+        if not raw_agent.get("progress"):
+            score -= 10
+            reasons.append("本轮未记录 progress 信号")
+            actions.append("下一轮必须写 final、commit/PR、测试或阻塞说明")
+
+        resource = resource_by_agent.get(agent_id, {})
+        severity = str(resource.get("severity") or "low")
+        if severity == "high":
+            score -= 15
+            reasons.append("资源风险 high")
+            actions.append(str(resource.get("action") or "缩小下一轮任务"))
+        elif severity == "medium":
+            score -= 8
+            reasons.append("资源风险 medium")
+            actions.append(str(resource.get("action") or "缩短下一轮任务并先提交"))
+
+        repo_penalty = 0
+        for item in repo_items_by_agent.get(agent_id, [])[:4]:
+            priority = int(item.get("priority", 50) or 50)
+            if priority <= 10:
+                repo_penalty += 12
+            elif priority <= 20:
+                repo_penalty += 8
+            else:
+                repo_penalty += 4
+            reasons.append(f"仓库风险：{item.get('category')} {item.get('repo')}")
+            actions.append(str(item.get("action") or "整理仓库状态"))
+        score -= min(repo_penalty, 20)
+
+        pr_penalty = 0
+        for item in pr_items_by_agent.get(agent_id, [])[:4]:
+            category = str(item.get("action_category") or "")
+            if category in {"resolve_conflicts", "fix_checks"}:
+                pr_penalty += 10
+            elif category == "update_branch":
+                pr_penalty += 7
+            elif category in {"blocked_gate", "inspect"}:
+                pr_penalty += 4
+            elif category == "wait_checks":
+                pr_penalty += 2
+            elif category == "merge_ready":
+                pr_penalty += 1
+            if category:
+                reasons.append(f"PR 队列：{item.get('repo')} #{item.get('number')} {category}")
+                actions.append(str(item.get("action") or "处理 PR 队列"))
+        score -= min(pr_penalty, 20)
+
+        for item in next_by_agent.get(agent_id, [])[:3]:
+            action = str(item.get("action") or "").strip()
+            if action and action not in actions:
+                actions.append(action)
+
+        score = max(0, min(100, score))
+        scored[agent_id] = {
+            "agent": agent_id,
+            "repo": raw_agent.get("repo") or AGENTS[agent_id]["repo"],
+            "status": status,
+            "score": score,
+            "label": health_label(score),
+            "reasons": reasons[:8],
+            "actions": actions[:8],
+        }
+
+    average = round(sum(int(item["score"]) for item in scored.values()) / max(1, len(scored)))
+    low_score_agents = [agent_id for agent_id, item in scored.items() if int(item.get("score", 0) or 0) < 70]
+    return {
+        "model": "goal-agent-status-version-resource-pr-v1",
+        "average_score": average,
+        "low_score_threshold": 70,
+        "low_score_agents": low_score_agents,
+        "agents": scored,
+    }
+
+
 def build_audit_report(summary: dict[str, Any]) -> str:
     agents = summary.get("agents") if isinstance(summary.get("agents"), dict) else {}
     repos = summary.get("repos") if isinstance(summary.get("repos"), dict) else {}
@@ -1446,6 +1654,8 @@ def build_audit_report(summary: dict[str, Any]) -> str:
     repo_state_risk = summary.get("repo_state_risk") if isinstance(summary.get("repo_state_risk"), dict) else {}
     resource_risk = summary.get("agent_resource_risk") if isinstance(summary.get("agent_resource_risk"), dict) else {}
     next_actions = summary.get("next_agent_actions") if isinstance(summary.get("next_agent_actions"), dict) else {}
+    agent_health = summary.get("agent_health") if isinstance(summary.get("agent_health"), dict) else {}
+    health_agents = agent_health.get("agents") if isinstance(agent_health.get("agents"), dict) else {}
 
     active = [agent_id for agent_id, agent in agents.items() if isinstance(agent, dict) and agent.get("status") == "running"]
     failed = [agent_id for agent_id, agent in agents.items() if isinstance(agent, dict) and agent.get("status") == "failed"]
@@ -1592,6 +1802,24 @@ def build_audit_report(summary: dict[str, Any]) -> str:
                 f"summary={item.get('summary')}{url_text}"
             )
 
+    health_lines = [
+        (
+            "- Agent 健康评分："
+            f"average={agent_health.get('average_score', 'unknown')}；"
+            f"low={agent_health.get('low_score_agents', [])}；"
+            f"model={agent_health.get('model', 'unknown')}。"
+        )
+    ]
+    for agent_id, raw_item in sorted(health_agents.items()):
+        item = raw_item if isinstance(raw_item, dict) else {}
+        reason_text = "；".join(str(reason) for reason in (item.get("reasons") if isinstance(item.get("reasons"), list) else [])[:3])
+        action_text = "；".join(str(action) for action in (item.get("actions") if isinstance(item.get("actions"), list) else [])[:2])
+        health_lines.append(
+            "- "
+            f"{agent_id}: score={item.get('score')} label={item.get('label')} status={item.get('status')} "
+            f"reason={reason_text or '无'} action={action_text or '继续推进'}"
+        )
+
     return "\n".join(
         [
             "# gotouhou 审计 agent 三小时汇报",
@@ -1609,6 +1837,10 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             "## 新 agent 状态",
             "",
             *agent_lines,
+            "",
+            "## Agent 健康评分",
+            "",
+            *health_lines,
             "",
             "## 本轮动作",
             "",
@@ -1665,12 +1897,13 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     legacy_agents = collect_legacy_agents(root)
     agents: dict[str, Any] = {}
     actions: list[dict[str, Any]] = []
+    should_persist = not args.dry_run and not args.no_start
 
     for agent_id, agent in AGENTS.items():
         key_assignment = select_key_alias(agent, keyring)
-        worktree = prepare_worktree(root, agent_id, agent, args.dry_run)
+        worktree = prepare_worktree(root, agent_id, agent, args.dry_run or args.no_start)
         workdir = Path(str(worktree["path"]))
-        paths = write_personas(root, agent_id, agent, workdir, key_assignment, previous) if not args.dry_run else {
+        paths = write_personas(root, agent_id, agent, workdir, key_assignment, previous) if should_persist else {
             "persona": str(root / ".agents" / "personas" / f"{agent_id}.md"),
             "prompt": str(root / ".agents" / "agent-prompts" / f"{agent_id}.md"),
             "workspace": str(root / ".agents" / "workspaces" / agent_id / "README.md"),
@@ -1680,20 +1913,29 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         start, reason = should_start_agent(lock, log, args.force_start, now)
         result: dict[str, Any] | None = None
         if start and not lock.get("alive") and worktree.get("ready", False):
-            result = start_agent(
-                root,
-                agent_id,
-                workdir,
-                Path(paths["persona"]),
-                Path(paths["prompt"]),
-                key_assignment,
-                args.dry_run or args.no_start,
-            )
+            if args.no_start:
+                result = {
+                    "started": False,
+                    "reason": "no-start",
+                    "would_start": True,
+                    "key_alias": key_assignment.get("alias"),
+                }
+            else:
+                result = start_agent(
+                    root,
+                    agent_id,
+                    workdir,
+                    Path(paths["persona"]),
+                    Path(paths["prompt"]),
+                    key_assignment,
+                    args.dry_run,
+                )
             actions.append({"type": "start-goal-agent", "agent": agent_id, "reason": reason, "result": result})
             lock = lock_status(root, agent_id, utcnow())
             log = log_info(latest_log(root, agent_id))
         elif start and not worktree.get("ready", False):
-            actions.append({"type": "worktree-blocked", "agent": agent_id, "reason": str(worktree.get("error") or worktree.get("output") or "worktree not ready")})
+            action_type = "would-prepare-worktree" if args.no_start else "worktree-blocked"
+            actions.append({"type": action_type, "agent": agent_id, "reason": str(worktree.get("error") or worktree.get("output") or "worktree not ready")})
 
         status = "running" if lock.get("alive") else "missing"
         if not lock.get("alive") and log.get("exited"):
@@ -1720,6 +1962,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         }
     agent_resource_risk = build_agent_resource_risk(agents, legacy_agents)
     next_agent_actions = build_next_agent_actions(pull_request_queue, agent_resource_risk, repo_state_risk)
+    agent_health = build_agent_health(agents, repo_state_risk, pull_request_queue, agent_resource_risk, next_agent_actions)
 
     summary = {
         "version": 2,
@@ -1729,6 +1972,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         "project_completion_percent": PROJECT_COMPLETION_PERCENT,
         "root": str(root),
         "dry_run": bool(args.dry_run),
+        "read_only_sample": bool(args.dry_run or args.no_start),
         "resampled_after_actions": True,
         "repos": repos,
         "repo_state_risk": repo_state_risk,
@@ -1738,19 +1982,26 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         "regression": regression,
         "legacy_agents": legacy_agents,
         "agent_resource_risk": agent_resource_risk,
+        "agent_health": agent_health,
         "next_agent_actions": next_agent_actions,
         "agents": agents,
         "actions": actions,
         "action_count": len(actions),
         "started_count": sum(1 for item in actions if (item.get("result") or {}).get("started")),
-        "failures": [item for item in actions if item.get("result") and not item["result"].get("started") and item["result"].get("reason") != "dry-run"],
+        "failures": [
+            item
+            for item in actions
+            if item.get("result")
+            and not item["result"].get("started")
+            and item["result"].get("reason") not in {"dry-run", "read-only-sample", "no-start"}
+        ],
         "previous_generated_at": previous.get("generated_at") if isinstance(previous, dict) else None,
     }
     audit_text = build_audit_report(summary)
     reports_dir = root / ".agents" / "reports"
     audit_path = reports_dir / "audit-agent-latest.md"
     plan_path = reports_dir / "plan-audit-latest.md"
-    if not args.dry_run:
+    if should_persist:
         atomic_write_text(audit_path, audit_text)
         atomic_write_text(plan_path, audit_text)
         if summary["started_count"] == 0:
@@ -1767,7 +2018,9 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             "text": audit_text[:3000],
         },
     }
-    if not args.dry_run:
+    if args.no_start:
+        summary["non_authoritative_reason"] = "--no-start does not launch agents and must not overwrite watchdog state"
+    if should_persist:
         write_json(agents_dir / "goal-agent-summary.json", summary)
         write_json(agents_dir / "last-watchdog-summary.json", summary)
         snapshot_dir = agents_dir / "hourly-snapshots"
@@ -1818,6 +2071,8 @@ def compact_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "generated_at": summary.get("generated_at"),
         "root": summary.get("root"),
         "dry_run": summary.get("dry_run"),
+        "read_only_sample": summary.get("read_only_sample"),
+        "non_authoritative_reason": summary.get("non_authoritative_reason"),
         "action_count": summary.get("action_count"),
         "started_count": summary.get("started_count"),
         "agents": {
@@ -1841,6 +2096,7 @@ def compact_summary(summary: dict[str, Any]) -> dict[str, Any]:
             for runtime_log in (agent.get("runtime_log") if isinstance(agent.get("runtime_log"), dict) else {},)
         },
         "repo_state_risk": summary.get("repo_state_risk"),
+        "agent_health": summary.get("agent_health"),
         "pull_request_queue": {
             key: value
             for key, value in (summary.get("pull_request_queue") if isinstance(summary.get("pull_request_queue"), dict) else {}).items()
@@ -1871,7 +2127,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--root", default="/root/gotouhou")
     parser.add_argument("--key-file", default=DEFAULT_KEY_FILE)
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--no-start", action="store_true", help="write state/personas without launching codex workers")
+    parser.add_argument("--no-start", action="store_true", help="sample only; do not launch agents or persist authoritative watchdog state")
     parser.add_argument("--force-start", action="store_true", help="start agents even if they completed recently")
     parser.add_argument("--full-output", action="store_true", help="print the complete JSON summary instead of the compact operational view")
     return parser.parse_args(argv)
