@@ -226,14 +226,38 @@ def pull_request_queue_lines(summary: dict[str, object], *, limit: int = 8) -> l
             f"by_repo={queue.get('by_repo', {})}；"
             f"by_state={queue.get('by_merge_state', {})}；"
             f"by_owner={queue.get('by_owner_agent', {})}；"
-            f"by_action={queue.get('by_action_category', {})}"
+            f"by_action={queue.get('by_action_category', {})}；"
+            f"supersede_groups={queue.get('supersede_group_count', 0)}"
         )
     ]
     if failed_repos:
         lines.append(f"- PR 采集失败仓库：{'、'.join(str(item) for item in failed_repos[:10])}")
+    groups = queue.get("supersede_groups") if isinstance(queue.get("supersede_groups"), list) else []
+    for raw_group in groups[:4]:
+        group = raw_group if isinstance(raw_group, dict) else {}
+        lines.append(
+            "- "
+            f"{group.get('owner_agent', 'unknown')} -> {group.get('repo')} stale group："
+            f"count={group.get('count')}；prs={group.get('numbers')}；"
+            f"states={group.get('merge_states')}；{group.get('action')}"
+        )
+    ready_items = queue.get("merge_ready_items") if isinstance(queue.get("merge_ready_items"), list) else []
+    for raw_item in ready_items[:6]:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
+        lines.append(
+            "- "
+            f"merge-ready {item.get('owner_agent', 'unknown')} -> {item.get('repo')} #{item.get('number')}："
+            f"checks ok/fail/pending={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)}；"
+            f"{item.get('url')}"
+        )
     items = queue.get("top_items") if isinstance(queue.get("top_items"), list) else []
     if not items:
-        lines.append("- 当前没有 open PR。")
+        open_count = int(queue.get("open_count", 0) or 0)
+        if open_count:
+            lines.append("- 当前没有可展示的 top PR 明细；请查看结构化 PR 队列。")
+        else:
+            lines.append("- 当前没有 open PR。")
         return lines
     for raw_item in items[:limit]:
         item = raw_item if isinstance(raw_item, dict) else {}
