@@ -48,6 +48,84 @@ def check_legacy_resource_risk_is_structured_not_managed() -> None:
     assert not any("legacy-agent-roster" in line for line in mail_lines[1:])
 
 
+def check_agent_health_promotes_version_and_resource_risk() -> None:
+    agents = {
+        "client-agent": {
+            "repo": "SpellKard",
+            "status": "running",
+            "progress": True,
+            "key_available": True,
+        },
+        "battle-server-agent": {
+            "repo": "PhK-BattleServer",
+            "status": "running",
+            "progress": True,
+            "key_available": True,
+        },
+        "nakama-server-agent": {
+            "repo": "Gensoulkyo",
+            "status": "running",
+            "progress": True,
+            "key_available": True,
+        },
+        "audit-agent": {
+            "repo": "docs",
+            "status": "running",
+            "progress": True,
+            "key_available": True,
+        },
+        "project-manager-agent": {
+            "repo": "docs",
+            "status": "running",
+            "progress": True,
+            "key_available": True,
+        },
+    }
+    repo_state_risk = {
+        "items": [
+            {
+                "owner_agent": "client-agent",
+                "repo": "SpellKard",
+                "priority": 16,
+                "category": "local_ahead",
+                "action": "push or convert the local commits into a current-base PR",
+            }
+        ]
+    }
+    resource_risk = {
+        "items": [
+            {
+                "agent": "client-agent",
+                "repo": "SpellKard",
+                "severity": "high",
+                "action": "split next work into a smaller PR-ready slice",
+            }
+        ]
+    }
+    next_actions = {
+        "items": [
+            {
+                "agent": "client-agent",
+                "action": "push or convert the local commits into a current-base PR",
+            }
+        ]
+    }
+
+    health = goal_agent_manager.build_agent_health(
+        agents,
+        repo_state_risk,
+        {"items": []},
+        resource_risk,
+        next_actions,
+    )
+
+    assert health["agents"]["client-agent"]["score"] < health["agents"]["battle-server-agent"]["score"]
+    assert "client-agent" not in health["low_score_agents"]
+    assert any("资源风险 high" in reason for reason in health["agents"]["client-agent"]["reasons"])
+    mail_lines = hourly_progress_mail.agent_health_lines({"agent_health": health})
+    assert any("client-agent" in line and "score=" in line for line in mail_lines)
+
+
 def check_pending_pr_checks_are_not_reported_as_branch_gate() -> None:
     priority, category, action = goal_agent_manager.classify_pull_request_action(
         {"mergeStateStatus": "BLOCKED"},
@@ -157,12 +235,34 @@ def check_running_agent_prefers_lock_log_path() -> None:
     assert running_log["token_usage"] is None
 
 
+def check_no_start_is_non_authoritative() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        root = Path(raw_tmp)
+        (root / ".agents").mkdir()
+        for repo_name in goal_agent_manager.DEFAULT_REPOS:
+            repo = root / repo_name
+            repo.mkdir()
+            (repo / ".git").mkdir()
+
+        args = goal_agent_manager.parse_args(["--root", str(root), "--no-start", "--key-file", str(root / "missing-keys")])
+        summary = goal_agent_manager.build_summary(args)
+
+        assert summary["read_only_sample"] is True
+        assert "non_authoritative_reason" in summary
+        assert not (root / ".agents" / "goal-agent-summary.json").exists()
+        assert not (root / ".agents" / "last-watchdog-summary.json").exists()
+        assert not (root / ".agents" / "manager-heartbeat.json").exists()
+        assert not (root / ".agents" / "personas").exists()
+
+
 def main() -> int:
     check_legacy_resource_risk_is_structured_not_managed()
+    check_agent_health_promotes_version_and_resource_risk()
     check_pending_pr_checks_are_not_reported_as_branch_gate()
     check_dirty_repo_owner_prefers_active_workdir_agent()
     check_mail_summary_falls_back_when_primary_is_invalid()
     check_running_agent_prefers_lock_log_path()
+    check_no_start_is_non_authoritative()
     print("check_goal_agent_manager ok")
     return 0
 

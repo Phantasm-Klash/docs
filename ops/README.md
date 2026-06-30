@@ -18,7 +18,9 @@ five sustained Codex `/goal` agents by agent identity only:
 - `project-manager-agent`: project propulsion and automatic coordination. It
   reads `docs/dev`, agent logs, git/PR status, regression results, and blockers;
   then adjusts personas/prompts and turns the plan into executable next slices
-  for the client, battle server, Nakama, and audit agents.
+  for the client, battle server, Nakama, and audit agents. It manages scheduling,
+  scoring, prompts, audit flow, and version flow; it must not directly implement
+  client, battle-server, or Nakama business code.
 
 The manager no longer uses path-slice scheduling or progress heuristics. Codex
 `/goal` mode is responsible for stable iterative work. The manager checks
@@ -27,6 +29,13 @@ missing/failed/due agents and never interrupts a running goal agent simply
 because the report interval arrived. The host runs the manager every 15 minutes
 through `gotouhou-goal-agent-manager.timer`; the three-hour mail timer only adds
 regression sampling and sends the concise report.
+
+The same 15-minute summary computes `agent_health`, a bounded project-management
+score per agent. The score is not a replacement for `/goal` mode and does not
+kill running agents. It gives the project manager and audit agent a compact
+signal for routing: non-running state, missing key aliases, absent progress
+signals, medium/high resource risk, dirty/ahead/behind checkout state, and PR
+conflicts or failed checks lower the score and become concrete next actions.
 
 Agent workers are launched with Codex `/goal` sustained-target prompts. The
 manager reads per-agent API keys from the host-local `/root/.codex/keys` file.
@@ -73,12 +82,18 @@ gates.
 The manager reads agent logs as bounded tail samples instead of loading whole
 log files. Reports should prefer structured fields such as `status`,
 `runtime_log.bytes`, `runtime_log.token_usage`, `agent_resource_risk`,
-`repo_state_risk`, `pull_request_queue`, and `next_agent_actions`; use
-`runtime_log.tail` only for short diagnostics. The manager's default CLI output
-is also compact; pass `--full-output` only when a local full JSON inspection is
-needed. Low resource-risk records stay in `agent_resource_risk` for trend
-tracking, but only medium/high resource risk is promoted into agent prompts or
-listed individually in the brief progress mail.
+`agent_health`, `repo_state_risk`, `pull_request_queue`, and
+`next_agent_actions`; use `runtime_log.tail` only for short diagnostics. The
+manager's default CLI output is also compact; pass `--full-output` only when a
+local full JSON inspection is needed. Low resource-risk records stay in
+`agent_resource_risk` for trend tracking, but only medium/high resource risk is
+promoted into agent prompts or listed individually in the brief progress mail.
+
+`--dry-run` and `--no-start` are read-only samples. They may print a compact JSON
+view to stdout, but they must not refresh `/root/gotouhou/.agents/goal-agent-summary.json`,
+`last-watchdog-summary.json`, manager heartbeat, hourly snapshots, worktrees, or
+personas. Only a normal 15-minute supervisor or normal mail runner invocation can
+write authoritative watchdog state.
 
 The same summary also includes `repo_state_risk`, which routes repository
 state that is not visible from PRs alone: dirty worktrees, local branches ahead
