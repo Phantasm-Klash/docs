@@ -3,7 +3,7 @@
 ## Goal agents and three-hour progress mail
 
 `goal_agent_manager.py` is the current orchestration entry point. It manages
-four sustained Codex `/goal` agents by agent identity only:
+five sustained Codex `/goal` agents by agent identity only:
 
 - `client-agent`: SpellKard client, core bullet gameplay, UI, replay/practice,
   and client/server protocol alignment.
@@ -15,12 +15,18 @@ four sustained Codex `/goal` agents by agent identity only:
   persistence.
 - `audit-agent`: Chinese audit of commits, direction, agent status, version
   flow, and the three-hour mail report.
+- `project-manager-agent`: project propulsion and automatic coordination. It
+  reads `docs/dev`, agent logs, git/PR status, regression results, and blockers;
+  then adjusts personas/prompts and turns the plan into executable next slices
+  for the client, battle server, Nakama, and audit agents.
 
 The manager no longer uses path-slice scheduling or progress heuristics. Codex
 `/goal` mode is responsible for stable iterative work. The manager checks
 whether each agent is running, completed, failed, or missing; it starts only
 missing/failed/due agents and never interrupts a running goal agent simply
-because the report interval arrived.
+because the report interval arrived. The host runs the manager every 15 minutes
+through `gotouhou-goal-agent-manager.timer`; the three-hour mail timer only adds
+regression sampling and sends the concise report.
 
 Agent workers are launched with Codex `/goal` sustained-target prompts. The
 manager reads per-agent API keys from the host-local `/root/.codex/keys` file.
@@ -32,6 +38,8 @@ email, or git. Current default alias fallbacks are:
 - `battle-server-agent`: `phk`, `battle-server`, `battle`, then `other`;
 - `nakama-server-agent`: `gensoulkyo`, then `other`;
 - `audit-agent`: `audit`, `docs`, `ops`, then `other`.
+- `project-manager-agent`: `manager`, `project-manager`, `pm`, `ops`, `docs`,
+  then `other`.
 
 Keep `/root/.codex/keys` mode `0600`; the progress email reports only aliases and
 permission warnings.
@@ -84,12 +92,16 @@ Systemd setup on the development host:
 
 ```sh
 sudo install -d -m 0750 /etc/gotouhou
+sudo install -m 0755 ops/goal_agent_supervisor_runner.sh /root/gotouhou/docs/ops/
 sudo install -m 0755 ops/hourly_progress_runner.sh /root/gotouhou/docs/ops/
+sudo install -m 0644 ops/gotouhou-goal-agent-manager.service /etc/systemd/system/
+sudo install -m 0644 ops/gotouhou-goal-agent-manager.timer /etc/systemd/system/
 sudo install -m 0644 ops/gotouhou-hourly-progress.service /etc/systemd/system/
 sudo install -m 0644 ops/gotouhou-hourly-progress.timer /etc/systemd/system/
 sudo editor /etc/gotouhou/progress-mail.env
 sudo systemctl daemon-reload
 sudo systemctl disable --now gotouhou-agent-watchdog.timer
+sudo systemctl enable --now gotouhou-goal-agent-manager.timer
 sudo systemctl enable --now gotouhou-hourly-progress.timer
 ```
 
@@ -110,6 +122,10 @@ on the configured port.
 Operational status files:
 
 - `/root/gotouhou/.agents/goal-agent-summary.json`: current goal agent status;
+- `/root/gotouhou/.agents/goal-agent-supervisor-last-run.json`: latest
+  15-minute supervisor JSON output;
+- `/root/gotouhou/.agents/goal-agent-supervisor-last-error.log`: last
+  15-minute supervisor stderr or lock-busy note;
 - `/root/gotouhou/.agents/hourly-snapshots/*.json`: periodic samples;
 - `/root/gotouhou/.agents/last-watchdog-summary.json`: latest mail summary input, kept for mail compatibility;
 - `/root/gotouhou/.agents/goal-agent-manager-last-error.log`: last manager stderr when the runner had to send a failure mail;
@@ -126,6 +142,7 @@ Validate units after installing:
 
 ```sh
 systemd-analyze verify /etc/systemd/system/gotouhou-hourly-progress.service /etc/systemd/system/gotouhou-hourly-progress.timer
+systemd-analyze verify /etc/systemd/system/gotouhou-goal-agent-manager.service /etc/systemd/system/gotouhou-goal-agent-manager.timer
 ```
 
 ## GitHub branch protection

@@ -4,7 +4,8 @@
 The current operating model is agent-based, not path-slice-based. Codex `/goal`
 mode is responsible for sustained iteration; this manager only prepares persona
 documents, starts missing or failed agents, records status, and feeds the
-three-hour audit mail.
+three-hour audit mail. A separate systemd timer should call this manager every
+15 minutes so agent supervision is not coupled to the mail cadence.
 """
 
 from __future__ import annotations
@@ -125,7 +126,32 @@ AGENTS: dict[str, dict[str, Any]] = {
             "token 消耗风险和是否还有旧 agent 应清退或重新规划。三小时邮件正文优先使用本 agent 的审计报告。"
         ),
     },
+    "project-manager-agent": {
+        "nickname": "Yukari",
+        "repo": "docs",
+        "key_aliases": ("manager", "project-manager", "pm", "ops", "docs", "other"),
+        "branch": "agent/project-manager-agent/persistent",
+        "summary": "项目推进与自动调度，读取 docs/dev、agent 日志、git/PR 状态并调整 agent 方向。",
+        "docs": (
+            "docs/dev/progress.md",
+            "docs/dev/gotouhou",
+            "docs/ops/README.md",
+            "docs/ops/goal_agent_manager.py",
+        ),
+        "checks": (
+            "python3 -m py_compile docs/ops/goal_agent_manager.py docs/ops/hourly_progress_mail.py",
+            "python3 docs/ops/goal_agent_manager.py --dry-run --root /root/gotouhou --no-start",
+            "python3 docs/ops/hourly_progress_mail.py --dry-run --brief",
+        ),
+        "mission": (
+            "作为项目推进和自动调度 agent，持续读取 docs/dev 路线、各 agent 日志、git 状态、PR 状态、回归结果和阻塞项；"
+            "把客户端、战斗服、Nakama、审计 agent 的下一步任务收敛成可执行小切片，必要时更新 persona/prompt，"
+            "推动阶段性 commit、branch/PR、测试和合并节奏。只按 agent 身份管理，不恢复 scope/路径分片概念。"
+        ),
+    },
 }
+
+MANAGED_AGENT_IDS = tuple(AGENTS.keys())
 
 
 def utcnow() -> dt.datetime:
@@ -398,7 +424,30 @@ def collect_pull_requests(root: Path, now: dt.datetime) -> dict[str, Any]:
 def prepare_worktree(root: Path, agent_id: str, agent: dict[str, Any], dry_run: bool) -> dict[str, Any]:
     repo_name = str(agent["repo"])
     if repo_name == "docs":
-        return {"path": str(root), "ready": True, "repo": repo_name, "branch": ""}
+        base_repo = root / "docs"
+        branch = str(agent.get("branch") or "")
+        if not branch:
+            return {"path": str(base_repo), "ready": (base_repo / ".git").exists(), "repo": repo_name, "branch": "main"}
+        workdir = root / ".agents" / "worktrees" / agent_id / "docs"
+        if (workdir / ".git").exists():
+            current_branch = run_command(["git", "branch", "--show-current"], workdir)[1]
+            return {"path": str(workdir), "ready": True, "repo": repo_name, "branch": current_branch, "existing": True}
+        if dry_run:
+            return {"path": str(workdir), "ready": False, "repo": repo_name, "branch": branch, "dry_run": True}
+        workdir.parent.mkdir(parents=True, exist_ok=True)
+        if workdir.exists() and any(workdir.iterdir()):
+            return {"path": str(workdir), "ready": False, "repo": repo_name, "branch": branch, "error": "target exists and is not a git worktree"}
+        branch_exists = run_command(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], base_repo)[0] == 0
+        command = ["git", "worktree", "add", str(workdir), branch] if branch_exists else ["git", "worktree", "add", "-b", branch, str(workdir), "HEAD"]
+        code, output = run_command(command, base_repo, timeout=120)
+        return {
+            "path": str(workdir),
+            "ready": code == 0,
+            "repo": repo_name,
+            "branch": branch,
+            "status": code,
+            "output": output[-1000:],
+        }
     base_repo = root / repo_name
     workdir = root / ".agents" / "worktrees" / agent_id / repo_name
     branch = str(agent["branch"])
@@ -554,7 +603,7 @@ def start_agent(
             f"echo '[goal-manager] started {agent_id} at {iso(now)}' >> {shlex.quote(str(log_path))}",
             f"echo '[goal-manager] persona {persona_path}' >> {shlex.quote(str(log_path))}",
             f"cd {shlex.quote(str(workdir))}",
-            f"/root/.local/bin/codex exec --dangerously-bypass-approvals-and-sandbox --add-dir {shlex.quote(str(root))} -C {shlex.quote(str(workdir))} - < {shlex.quote(str(prompt_path))} >> {shlex.quote(str(log_path))} 2>&1",
+            f"/root/.local/bin/codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --add-dir {shlex.quote(str(root))} -C {shlex.quote(str(workdir))} - < {shlex.quote(str(prompt_path))} >> {shlex.quote(str(log_path))} 2>&1",
             "status=$?",
             f"echo '[goal-manager] exited status='$status >> {shlex.quote(str(log_path))}",
             "exit $status",
@@ -709,8 +758,8 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             "",
             "## 结论",
             "",
-            "- 已将开发管理模型收敛为 4 个 agent：client-agent、battle-server-agent、nakama-server-agent、audit-agent。",
-            "- 已去除旧分片调度概念；manager 只检测 agent 状态，非运行即补启，运行中不打断。",
+            f"- 已将开发管理模型收敛为 {len(MANAGED_AGENT_IDS)} 个 agent：{', '.join(MANAGED_AGENT_IDS)}。",
+            "- 已去除旧分片调度概念；manager 只检测 agent 状态，非运行即补启，运行中不打断；15 分钟 supervisor 独立于三小时邮件。",
             f"- 当前运行中：{', '.join(active) if active else '无'}；失败：{', '.join(failed) if failed else '无'}。",
             f"- 整体完成度仍按约 {PROJECT_COMPLETION_PERCENT}% 估算；主线仍是 Phase 3 服务器权威在线 MVP，同时补 Phase 2/6/8 客户端弹幕与 UI。",
             cleanup_line,
@@ -741,6 +790,7 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             "- battle-server-agent：优先推进房间生命周期、Boss 战斗实例、输入窗口、Replay/hash、结算签名和 protocol audit。",
             "- nakama-server-agent：优先推进 PVP 匹配队列、资格验证、battle ticket/allocation、Nakama RPC/WSS 合同和 PostgreSQL audit。",
             "- audit-agent：继续用中文审计提交和方向，三小时邮件只保留结论、阻塞和下一步，不再粘贴长日志。",
+            "- project-manager-agent：每轮读取 docs/dev、日志、PR、回归和 git 状态，主动给各 agent 收敛下一步任务、提示词和版本流程。",
         ]
     ) + "\n"
 
@@ -869,8 +919,9 @@ def write_manager_status(root: Path, summary: dict[str, Any]) -> None:
         "",
         f"Updated: {summary.get('generated_at')}",
         "Mode: codex-/goal-active",
-        "Managed agents: client-agent, battle-server-agent, nakama-server-agent, audit-agent",
-            "Model: agent status detection only; non-running agents are restarted; no path-slice scheduling or progress heuristics.",
+        f"Managed agents: {', '.join(MANAGED_AGENT_IDS)}",
+        "Model: agent status detection only; non-running agents are restarted; no path-slice scheduling or progress heuristics.",
+        "Supervisor cadence: 15 minutes; mail cadence: 3 hours.",
         "",
         "| Agent | Repo | Status | Key alias | Workdir | Persona |",
         "| --- | --- | --- | --- | --- | --- |",
