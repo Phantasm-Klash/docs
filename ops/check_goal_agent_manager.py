@@ -120,6 +120,8 @@ def check_agent_health_promotes_version_and_resource_risk() -> None:
         next_actions,
     )
 
+    assert health["score"] == health["average_score"]
+    assert health["label"] == goal_agent_manager.health_label(health["average_score"])
     assert health["agents"]["client-agent"]["score"] < health["agents"]["battle-server-agent"]["score"]
     assert "client-agent" not in health["low_score_agents"]
     assert any("资源风险 high" in reason for reason in health["agents"]["client-agent"]["reasons"])

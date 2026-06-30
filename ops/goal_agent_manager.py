@@ -1636,6 +1636,8 @@ def build_agent_health(
     low_score_agents = [agent_id for agent_id, item in scored.items() if int(item.get("score", 0) or 0) < 70]
     return {
         "model": "goal-agent-status-version-resource-pr-v1",
+        "score": average,
+        "label": health_label(average),
         "average_score": average,
         "low_score_threshold": 70,
         "low_score_agents": low_score_agents,
