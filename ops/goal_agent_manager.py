@@ -30,6 +30,10 @@ GITHUB_ORG = "Phantasm-Klash"
 REPORT_INTERVAL_HOURS = 3
 PROJECT_COMPLETION_PERCENT = 38
 UTC = dt.timezone.utc
+TOKEN_MEDIUM_RISK = 200_000
+TOKEN_HIGH_RISK = 500_000
+LOG_BYTES_MEDIUM_RISK = 1_000_000
+LOG_BYTES_HIGH_RISK = 3_000_000
 
 
 AGENTS: dict[str, dict[str, Any]] = {
@@ -857,11 +861,114 @@ def collect_legacy_agents(root: Path) -> dict[str, Any]:
     records = roster.get("scopes") if isinstance(roster, dict) else {}
     if isinstance(records, dict):
         old_records = sorted(str(item) for item in records)
+    log_prefixes: dict[str, dict[str, Any]] = {}
+    logs_dir = root / ".agents" / "logs"
+    if logs_dir.exists():
+        for path in logs_dir.glob("*.log"):
+            match = re.match(r"(.+)-\d{8}T\d{6}Z\.log$", path.name)
+            if not match:
+                continue
+            prefix = match.group(1)
+            if prefix in MANAGED_AGENT_IDS:
+                continue
+            stat = path.stat()
+            record = log_prefixes.setdefault(
+                prefix,
+                {"prefix": prefix, "count": 0, "latest_log": "", "latest_updated_at": "", "latest_bytes": 0},
+            )
+            record["count"] = int(record["count"]) + 1
+            latest_dt = parse_iso(record.get("latest_updated_at"))
+            updated_at = dt.datetime.fromtimestamp(stat.st_mtime, UTC)
+            if latest_dt is None or updated_at > latest_dt:
+                record["latest_log"] = str(path)
+                record["latest_updated_at"] = iso(updated_at)
+                record["latest_bytes"] = stat.st_size
     return {
         "systemd_status": code,
         "systemd_units": units.splitlines()[:80],
         "old_roster_records": old_records,
         "old_roster_record_count": len(old_records),
+        "legacy_log_prefixes": sorted(log_prefixes.values(), key=lambda item: str(item.get("prefix", ""))),
+        "legacy_log_prefix_count": len(log_prefixes),
+    }
+
+
+def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for agent_id, raw_agent in sorted(agents.items()):
+        agent = raw_agent if isinstance(raw_agent, dict) else {}
+        runtime_log = agent.get("runtime_log") if isinstance(agent.get("runtime_log"), dict) else {}
+        token_usage = runtime_log.get("token_usage")
+        log_bytes = int(runtime_log.get("bytes", 0) or 0)
+        severity = "low"
+        reasons: list[str] = []
+        action = "keep normal slice size"
+
+        if isinstance(token_usage, int):
+            if token_usage >= TOKEN_HIGH_RISK:
+                severity = "high"
+                reasons.append(f"last_run_tokens>={TOKEN_HIGH_RISK}")
+                action = "split next work into a smaller PR-ready slice and keep final report concise"
+            elif token_usage >= TOKEN_MEDIUM_RISK:
+                severity = "medium"
+                reasons.append(f"last_run_tokens>={TOKEN_MEDIUM_RISK}")
+                action = "shorten the next iteration and commit before expanding scope"
+        elif agent.get("status") == "running":
+            reasons.append("running_without_final_token_sample")
+
+        if log_bytes >= LOG_BYTES_HIGH_RISK:
+            severity = "high"
+            reasons.append(f"log_bytes>={LOG_BYTES_HIGH_RISK}")
+            action = "stop copying long logs into reports; summarize checks and PR state only"
+        elif log_bytes >= LOG_BYTES_MEDIUM_RISK and severity == "low":
+            severity = "medium"
+            reasons.append(f"log_bytes>={LOG_BYTES_MEDIUM_RISK}")
+            action = "trim report/log tails and prefer structured status fields"
+
+        if not reasons:
+            reasons.append("within_current_thresholds")
+        items.append(
+            {
+                "agent": agent_id,
+                "repo": agent.get("repo"),
+                "status": agent.get("status"),
+                "severity": severity,
+                "token_usage": token_usage,
+                "log_bytes": log_bytes,
+                "reasons": reasons,
+                "action": action,
+            }
+        )
+
+    old_records = legacy.get("old_roster_records") if isinstance(legacy.get("old_roster_records"), list) else []
+    legacy_prefixes = legacy.get("legacy_log_prefixes") if isinstance(legacy.get("legacy_log_prefixes"), list) else []
+    if old_records or legacy_prefixes:
+        items.append(
+            {
+                "agent": "legacy-agent-roster",
+                "repo": "ops",
+                "status": "frozen",
+                "severity": "medium",
+                "token_usage": None,
+                "log_bytes": 0,
+                "reasons": [f"old_roster_records={len(old_records)}", f"legacy_log_prefixes={len(legacy_prefixes)}"],
+                "action": "keep old agents frozen; only migrate proven useful work into the five managed agents",
+            }
+        )
+
+    severity_order = {"high": 0, "medium": 1, "low": 2}
+    items.sort(key=lambda item: (severity_order.get(str(item.get("severity")), 9), str(item.get("agent", ""))))
+    return {
+        "thresholds": {
+            "token_medium": TOKEN_MEDIUM_RISK,
+            "token_high": TOKEN_HIGH_RISK,
+            "log_bytes_medium": LOG_BYTES_MEDIUM_RISK,
+            "log_bytes_high": LOG_BYTES_HIGH_RISK,
+        },
+        "high_count": sum(1 for item in items if item.get("severity") == "high"),
+        "medium_count": sum(1 for item in items if item.get("severity") == "medium"),
+        "items": items,
+        "top_items": items[:8],
     }
 
 
@@ -873,6 +980,7 @@ def build_audit_report(summary: dict[str, Any]) -> str:
     regression = summary.get("regression") if isinstance(summary.get("regression"), dict) else {}
     pull_requests = summary.get("pull_requests") if isinstance(summary.get("pull_requests"), dict) else {}
     pull_request_queue = summary.get("pull_request_queue") if isinstance(summary.get("pull_request_queue"), dict) else {}
+    resource_risk = summary.get("agent_resource_risk") if isinstance(summary.get("agent_resource_risk"), dict) else {}
 
     active = [agent_id for agent_id, agent in agents.items() if isinstance(agent, dict) and agent.get("status") == "running"]
     failed = [agent_id for agent_id, agent in agents.items() if isinstance(agent, dict) and agent.get("status") == "failed"]
@@ -960,6 +1068,22 @@ def build_audit_report(summary: dict[str, Any]) -> str:
         cleanup_line = "- 旧 roster 记录已不再作为调度依据：" + "、".join(str(item) for item in old_records[:20]) + "。"
     else:
         cleanup_line = "- 未发现旧 roster 记录。"
+    resource_lines = [
+        (
+            "- agent 资源风险："
+            f"high={resource_risk.get('high_count', 'unknown')}；"
+            f"medium={resource_risk.get('medium_count', 'unknown')}。"
+        )
+    ]
+    for item in resource_risk.get("top_items", [])[:8]:
+        if isinstance(item, dict):
+            token_usage = item.get("token_usage")
+            token_text = f"{int(token_usage):,}" if isinstance(token_usage, int) else "unknown"
+            resource_lines.append(
+                "- "
+                f"{item.get('agent')} {item.get('severity')} tokens={token_text} "
+                f"log_bytes={item.get('log_bytes')} action={item.get('action')}"
+            )
 
     return "\n".join(
         [
@@ -995,6 +1119,12 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             "",
             f"- 最新 regression：ok={regression.get('ok', 'unknown')}，failed={regression.get('failed_count', 'unknown')}。",
             "- 服务端回归使用 `docker-compose`；Godot 纯渲染器/RenderingDevice 缺 GPU 失败可忽略，脚本/合同失败不能忽略。",
+            "",
+            "## Token 与停滞风险",
+            "",
+            *resource_lines,
+            "- 当前没有新 agent 停滞证据；运行中的 agent 不应被三小时邮件打断。",
+            "- 并行输出速度仍高于合并与整理速度；SpellKard 是唯一明显积压点。",
             "",
             "## 下个三小时方向",
             "",
@@ -1075,6 +1205,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             "progress": bool(lock.get("alive") or log.get("bytes", 0) or (result or {}).get("started")),
             "reason": reason,
         }
+    agent_resource_risk = build_agent_resource_risk(agents, legacy_agents)
 
     summary = {
         "version": 2,
@@ -1091,6 +1222,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         "runtime": runtime,
         "regression": regression,
         "legacy_agents": legacy_agents,
+        "agent_resource_risk": agent_resource_risk,
         "agents": agents,
         "actions": actions,
         "action_count": len(actions),
