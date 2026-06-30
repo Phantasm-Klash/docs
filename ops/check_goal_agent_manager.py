@@ -74,7 +74,8 @@ def check_running_log_staleness_becomes_resource_risk() -> None:
     assert item["severity"] == "high"
     assert item["log_age_seconds"] >= goal_agent_manager.RUNNING_LOG_STALE_HIGH_SECONDS
     assert any("running_log_stale_seconds" in reason for reason in item["reasons"])
-    assert "明确阻塞" in item["action"]
+    assert "关键错误" in item["action"]
+    assert "阻塞" in item["action"]
 
 
 def check_recent_large_managed_log_keeps_resource_risk() -> None:
