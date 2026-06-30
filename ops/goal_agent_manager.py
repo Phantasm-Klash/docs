@@ -2,10 +2,11 @@
 """Manage the current gotouhou sustained goal agents.
 
 The current operating model is agent-based, not path-slice-based. Codex `/goal`
-mode is responsible for sustained iteration; this manager only prepares persona
-documents, starts missing or failed agents, records status, and feeds the
-three-hour audit mail. A separate systemd timer should call this manager every
-15 minutes so agent supervision is not coupled to the mail cadence.
+mode is responsible for sustained iteration; this manager prepares persona
+documents, starts missing or failed agents, samples live worktree/PR/runtime
+state, and feeds identity-based next actions back into the five managed agents.
+A separate systemd timer calls this manager every 15 minutes so supervision and
+project-manager steering are not coupled to the three-hour mail cadence.
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ TOKEN_MEDIUM_RISK = 200_000
 TOKEN_HIGH_RISK = 500_000
 LOG_BYTES_MEDIUM_RISK = 1_000_000
 LOG_BYTES_HIGH_RISK = 3_000_000
+RUNNING_LOG_STALE_MEDIUM_SECONDS = 30 * 60
+RUNNING_LOG_STALE_HIGH_SECONDS = 90 * 60
 LOG_SAMPLE_BYTES = 64_000
 LOG_TAIL_CHARS = 800
 PROMPT_MAX_NEXT_ACTION_LINES = 6
@@ -300,6 +303,8 @@ def agent_operating_limits(agent_id: str) -> str:
         "project-manager-agent": [
             "- 只做项目推进、调度、评分、提示词和版本流程管理；不得直接实现 client/battle/nakama 业务代码。",
             "- 每轮读取 docs/dev、agent 日志、PR、回归和 git 状态，给低分 agent 写清下一步小切片、测试和 PR 要求。",
+            "- 每轮必须关闭至少一个调度闭环：dirty/ahead 收口、PR 推进、失败检查分派、提示词修正或权威复采样。",
+            "- 每轮 final 必须列出所有 managed agent 的 dirty/ahead/behind、最新日志更新时间、open PR 和下一步强制动作。",
             "- 监督周期内必须主动推进交付闭环：发现 agent dirty/ahead、PR 堆积、检查失败、长日志或状态不一致时，先派发/调整对应 agent 去提交、推送、开 PR、修复或复采样。",
             "- 若 15 分钟摘要和 systemd 实际 unit 不一致，优先修正 manager 采样与状态文件，不允许邮件继续使用旧摘要。",
             "- 可以修改 docs/ops 的 manager、邮件、提示词和队列逻辑；业务修复必须分派给对应 owning agent 或单独 fix agent。",
@@ -411,6 +416,82 @@ def previous_next_action_prompt(agent_id: str, previous: dict[str, Any]) -> str:
     if not lines:
         return "- 当前没有 manager 写入的结构化下一步行动项；按 docs/dev 和当前仓库状态选择最小切片。"
     return "\n".join(lines)
+
+
+def repo_state_prompt_action(item: dict[str, Any]) -> str:
+    category = str(item.get("category") or "")
+    repo = prompt_clip(item.get("repo"), 64)
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    branch = prompt_clip(evidence.get("branch"), 96)
+    dirty_count = evidence.get("dirty_count")
+    if category == "dirty_worktree":
+        dirty_suffix = f"dirty={dirty_count}；" if dirty_count is not None else ""
+        return (
+            f"先止血版本状态：检查 {repo} {branch} 的 {dirty_suffix}"
+            "只做保留价值判断，提交/推 PR 或写明 supersede/废弃原因；完成前不要扩展新业务切片"
+        )
+    if category == "legacy_branch_checkout":
+        return (
+            f"不要把 {repo} root checkout 的 legacy 分支 {branch} 当基线；"
+            "如有价值先迁移到 owning managed agent branch，否则只记录清退说明"
+        )
+    if category == "local_ahead":
+        ahead = evidence.get("ahead")
+        return (
+            f"先处理 {repo} {branch} 本地 ahead={ahead}：推送并开/更新 PR，"
+            "或记录无法推送原因；不要继续叠加本地提交"
+        )
+    if category == "local_behind":
+        behind = evidence.get("behind")
+        return f"先同步 {repo} {branch} behind={behind} 到最新 upstream，再选择新切片"
+    return str(item.get("action") or "inspect repository state")
+
+
+def managed_worktree_action(agent_id: str, agent: dict[str, Any], category: str, worktree_state: dict[str, Any]) -> dict[str, Any]:
+    repo = str(agent.get("repo") or AGENTS.get(agent_id, {}).get("repo") or "unknown")
+    branch = str(worktree_state.get("branch") or "")
+    evidence = {
+        "path": worktree_state.get("path"),
+        "branch": branch,
+        "head": worktree_state.get("head"),
+        "dirty_count": worktree_state.get("dirty_count"),
+        "dirty": worktree_state.get("dirty"),
+        "ahead": worktree_state.get("ahead"),
+        "behind": worktree_state.get("behind"),
+        "status": worktree_state.get("status"),
+    }
+    if category == "managed_worktree_dirty":
+        dirty_count = int(worktree_state.get("dirty_count", 0) or 0)
+        return {
+            "agent": agent_id,
+            "repo": repo,
+            "priority": 6,
+            "category": category,
+            "summary": f"{agent_id} managed worktree has dirty={dirty_count} on {branch}",
+            "action": "先收敛当前代码切片：运行相关检查，提交 scoped 改动，推送/开 PR 或写明阻塞；完成前不要继续扩展新功能",
+            "evidence": evidence,
+        }
+    if category == "managed_worktree_ahead":
+        ahead = int(worktree_state.get("ahead", 0) or 0)
+        return {
+            "agent": agent_id,
+            "repo": repo,
+            "priority": 7,
+            "category": category,
+            "summary": f"{agent_id} managed worktree is ahead={ahead} on {branch}",
+            "action": "先推送 ahead 提交并开/更新 PR，或写明无法推送原因；不要继续堆 only-local 提交",
+            "evidence": evidence,
+        }
+    behind = int(worktree_state.get("behind", 0) or 0)
+    return {
+        "agent": agent_id,
+        "repo": repo,
+        "priority": 28,
+        "category": category,
+        "summary": f"{agent_id} managed worktree is behind={behind} on {branch}",
+        "action": "先同步最新 upstream/main 或 owning branch，再继续新切片",
+        "evidence": evidence,
+    }
 
 
 def previous_health_prompt(agent_id: str, previous: dict[str, Any]) -> str:
@@ -1326,37 +1407,55 @@ def collect_legacy_agents(root: Path) -> dict[str, Any]:
     }
 
 
-def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) -> dict[str, Any]:
+def build_agent_resource_risk(
+    agents: dict[str, Any],
+    legacy: dict[str, Any],
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    sample_time = now or utcnow()
     items: list[dict[str, Any]] = []
     for agent_id, raw_agent in sorted(agents.items()):
         agent = raw_agent if isinstance(raw_agent, dict) else {}
         runtime_log = agent.get("runtime_log") if isinstance(agent.get("runtime_log"), dict) else {}
         token_usage = runtime_log.get("token_usage")
         log_bytes = int(runtime_log.get("bytes", 0) or 0)
+        updated_at = parse_iso(runtime_log.get("updated_at"))
+        log_age_seconds = max(0, int((sample_time - updated_at).total_seconds())) if updated_at else None
         severity = "low"
         reasons: list[str] = []
         action = "keep normal slice size"
+
+        if agent.get("status") == "running" and log_age_seconds is not None:
+            if log_age_seconds >= RUNNING_LOG_STALE_HIGH_SECONDS:
+                severity = "high"
+                reasons.append(f"running_log_stale_seconds>={RUNNING_LOG_STALE_HIGH_SECONDS}")
+                action = "立即检查该 agent 是否卡在测试/网络/权限；把下一轮压缩为提交、推送、PR 或明确阻塞"
+            elif log_age_seconds >= RUNNING_LOG_STALE_MEDIUM_SECONDS:
+                severity = "medium"
+                reasons.append(f"running_log_stale_seconds>={RUNNING_LOG_STALE_MEDIUM_SECONDS}")
+                action = "下轮优先要求该 agent 收敛当前小切片并刷新 final/status，不继续扩展任务"
 
         if isinstance(token_usage, int):
             if token_usage >= TOKEN_HIGH_RISK:
                 severity = "high"
                 reasons.append(f"last_run_tokens>={TOKEN_HIGH_RISK}")
-                action = "split next work into a smaller PR-ready slice and keep final report concise"
+                action = "把下一轮切成更小的 PR-ready 切片，final 只写结论、提交/PR、测试和阻塞"
             elif token_usage >= TOKEN_MEDIUM_RISK:
-                severity = "medium"
+                if severity == "low":
+                    severity = "medium"
                 reasons.append(f"last_run_tokens>={TOKEN_MEDIUM_RISK}")
-                action = "shorten the next iteration and commit before expanding the task"
+                action = "缩短下一轮任务，先提交/推送已验证成果再扩展"
         elif agent.get("status") == "running":
             reasons.append("running_without_final_token_sample")
 
         if log_bytes >= LOG_BYTES_HIGH_RISK:
             severity = "high"
             reasons.append(f"log_bytes>={LOG_BYTES_HIGH_RISK}")
-            action = "stop copying long logs into reports; summarize checks and PR state only"
+            action = "停止复制长日志；只汇总检查结果、PR 状态和关键错误"
         elif log_bytes >= LOG_BYTES_MEDIUM_RISK and severity == "low":
             severity = "medium"
             reasons.append(f"log_bytes>={LOG_BYTES_MEDIUM_RISK}")
-            action = "trim report/log tails and prefer structured status fields"
+            action = "压缩报告和日志尾部，优先写结构化状态字段"
 
         if not reasons:
             reasons.append("within_current_thresholds")
@@ -1368,6 +1467,7 @@ def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) ->
                 "severity": severity,
                 "token_usage": token_usage,
                 "log_bytes": log_bytes,
+                "log_age_seconds": log_age_seconds,
                 "reasons": reasons,
                 "action": action,
             }
@@ -1399,6 +1499,8 @@ def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) ->
             "token_high": TOKEN_HIGH_RISK,
             "log_bytes_medium": LOG_BYTES_MEDIUM_RISK,
             "log_bytes_high": LOG_BYTES_HIGH_RISK,
+            "running_log_stale_medium_seconds": RUNNING_LOG_STALE_MEDIUM_SECONDS,
+            "running_log_stale_high_seconds": RUNNING_LOG_STALE_HIGH_SECONDS,
         },
         "high_count": sum(1 for item in managed_items if item.get("severity") == "high"),
         "medium_count": sum(1 for item in managed_items if item.get("severity") == "medium"),
@@ -1413,8 +1515,21 @@ def build_next_agent_actions(
     pull_request_queue: dict[str, Any],
     resource_risk: dict[str, Any],
     repo_state_risk: dict[str, Any],
+    agents: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
+
+    for agent_id, raw_agent in sorted((agents or {}).items()):
+        agent = raw_agent if isinstance(raw_agent, dict) else {}
+        worktree_state = agent.get("worktree_state") if isinstance(agent.get("worktree_state"), dict) else {}
+        if not worktree_state or worktree_state.get("missing"):
+            continue
+        if int(worktree_state.get("dirty_count", 0) or 0) > 0:
+            items.append(managed_worktree_action(agent_id, agent, "managed_worktree_dirty", worktree_state))
+        if int(worktree_state.get("ahead", 0) or 0) > 0:
+            items.append(managed_worktree_action(agent_id, agent, "managed_worktree_ahead", worktree_state))
+        if int(worktree_state.get("behind", 0) or 0) > 0:
+            items.append(managed_worktree_action(agent_id, agent, "managed_worktree_behind", worktree_state))
 
     for raw_item in repo_state_risk.get("top_items", []):
         item = raw_item if isinstance(raw_item, dict) else {}
@@ -1425,7 +1540,7 @@ def build_next_agent_actions(
                 "priority": int(item.get("priority", 40) or 40),
                 "category": str(item.get("category") or "repo_state"),
                 "summary": str(item.get("summary") or ""),
-                "action": str(item.get("action") or "inspect repository state"),
+                "action": repo_state_prompt_action(item),
                 "evidence": item.get("evidence") if isinstance(item.get("evidence"), dict) else {},
             }
         )
@@ -1662,7 +1777,7 @@ def build_agent_health(
             else:
                 repo_penalty += 4
             reasons.append(f"仓库风险：{item.get('category')} {item.get('repo')}")
-            actions.append(str(item.get("action") or "整理仓库状态"))
+            actions.append(repo_state_prompt_action(item))
         score -= min(repo_penalty, 20)
 
         pr_penalty = 0
@@ -1899,7 +2014,7 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             "## 结论",
             "",
             f"- 已将开发管理模型收敛为 {len(MANAGED_AGENT_IDS)} 个 agent：{', '.join(MANAGED_AGENT_IDS)}。",
-            "- 已去除旧分片调度概念；manager 只检测 agent 状态，非运行即补启，运行中不打断；15 分钟 supervisor 独立于三小时邮件。",
+            "- 已去除旧分片调度概念；manager 15 分钟采样 agent 状态、worktree、PR、资源和日志停滞信号，非运行即补启，并把 next_actions 写回提示词。",
             f"- 当前运行中：{', '.join(active) if active else '无'}；失败：{', '.join(failed) if failed else '无'}。",
             f"- 整体完成度仍按约 {PROJECT_COMPLETION_PERCENT}% 估算；主线仍是 Phase 3 服务器权威在线 MVP，同时补 Phase 2/6/8 客户端弹幕与 UI。",
             cleanup_line,
@@ -1946,7 +2061,7 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             "- battle-server-agent：优先推进房间生命周期、Boss 战斗实例、输入窗口、Replay/hash、结算签名和 protocol audit。",
             "- nakama-server-agent：优先推进 PVP 匹配队列、资格验证、battle ticket/allocation、Nakama RPC/WSS 合同和 PostgreSQL audit。",
             "- audit-agent：继续用中文审计提交和方向，三小时邮件只保留结论、阻塞和下一步，不再粘贴长日志。",
-            "- project-manager-agent：每轮读取 docs/dev、日志、PR、回归和 git 状态，主动给各 agent 收敛下一步任务、提示词和版本流程。",
+            "- project-manager-agent：每轮读取 docs/dev、日志、PR、回归和 git 状态，主动推进 dirty/ahead/PR/停滞收敛、提示词和版本流程。",
         ]
     ) + "\n"
 
@@ -2031,8 +2146,8 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             "progress": bool(lock.get("alive") or log.get("bytes", 0) or (result or {}).get("started")),
             "reason": reason,
         }
-    agent_resource_risk = build_agent_resource_risk(agents, legacy_agents)
-    next_agent_actions = build_next_agent_actions(pull_request_queue, agent_resource_risk, repo_state_risk)
+    agent_resource_risk = build_agent_resource_risk(agents, legacy_agents, now)
+    next_agent_actions = build_next_agent_actions(pull_request_queue, agent_resource_risk, repo_state_risk, agents)
     agent_health = build_agent_health(agents, repo_state_risk, pull_request_queue, agent_resource_risk, next_agent_actions)
 
     summary = {
@@ -2107,7 +2222,7 @@ def write_manager_status(root: Path, summary: dict[str, Any]) -> None:
         f"Updated: {summary.get('generated_at')}",
         "Mode: codex-/goal-active",
         f"Managed agents: {', '.join(MANAGED_AGENT_IDS)}",
-        "Model: agent status detection only; non-running agents are restarted; no path-slice scheduling or progress heuristics.",
+        "Model: identity-based goal agents; non-running agents are restarted; dirty/ahead/behind, PR, resource, and stale-log signals become next actions.",
         "Supervisor cadence: 15 minutes; mail cadence: 3 hours.",
         "",
         "| Agent | Repo | Status | Key alias | Workdir | Persona |",

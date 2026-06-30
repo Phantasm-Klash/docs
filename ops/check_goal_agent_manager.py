@@ -6,6 +6,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import os
+import datetime as dt
 from pathlib import Path
 
 
@@ -47,6 +48,33 @@ def check_legacy_resource_risk_is_structured_not_managed() -> None:
     mail_lines = hourly_progress_mail.agent_resource_risk_lines({"agent_resource_risk": summary})
     assert "legacy=1" in mail_lines[0]
     assert not any("legacy-agent-roster" in line for line in mail_lines[1:])
+
+
+def check_running_log_staleness_becomes_resource_risk() -> None:
+    now = dt.datetime(2026, 6, 30, 16, 0, tzinfo=goal_agent_manager.UTC)
+    stale_at = now - dt.timedelta(seconds=goal_agent_manager.RUNNING_LOG_STALE_HIGH_SECONDS + 60)
+    summary = goal_agent_manager.build_agent_resource_risk(
+        {
+            "project-manager-agent": {
+                "repo": "docs",
+                "status": "running",
+                "runtime_log": {
+                    "token_usage": None,
+                    "bytes": 1200,
+                    "updated_at": goal_agent_manager.iso(stale_at),
+                },
+            }
+        },
+        {"old_roster_records": [], "legacy_log_prefixes": []},
+        now,
+    )
+
+    item = summary["items"][0]
+    assert item["agent"] == "project-manager-agent"
+    assert item["severity"] == "high"
+    assert item["log_age_seconds"] >= goal_agent_manager.RUNNING_LOG_STALE_HIGH_SECONDS
+    assert any("running_log_stale_seconds" in reason for reason in item["reasons"])
+    assert "明确阻塞" in item["action"]
 
 
 def check_agent_health_promotes_version_and_resource_risk() -> None:
@@ -134,6 +162,104 @@ def check_agent_health_promotes_version_and_resource_risk() -> None:
     assert any("agent worktree ahead=6" in reason for reason in health["agents"]["client-agent"]["reasons"])
     mail_lines = hourly_progress_mail.agent_health_lines({"agent_health": health})
     assert any("client-agent" in line and "score=" in line for line in mail_lines)
+
+
+def check_managed_worktree_state_becomes_agent_actions() -> None:
+    agents = {
+        "client-agent": {
+            "repo": "SpellKard",
+            "worktree_state": {
+                "missing": False,
+                "path": "/tmp/SpellKard",
+                "branch": "agent/client-agent/persistent",
+                "head": "abc1234",
+                "dirty_count": 2,
+                "dirty": [" M godot/project.godot", "?? godot/tests/new_test.gd"],
+                "ahead": 3,
+                "behind": 0,
+            },
+        },
+        "battle-server-agent": {
+            "repo": "PhK-BattleServer",
+            "worktree_state": {
+                "missing": False,
+                "path": "/tmp/PhK-BattleServer",
+                "branch": "agent/battle-server-agent/persistent",
+                "head": "def5678",
+                "dirty_count": 0,
+                "dirty": [],
+                "ahead": 0,
+                "behind": 1,
+            },
+        },
+    }
+
+    actions = goal_agent_manager.build_next_agent_actions(
+        {"items": [], "top_items": [], "merge_ready_items": [], "supersede_groups": []},
+        {"top_items": []},
+        {"top_items": []},
+        agents,
+    )
+
+    categories = {(item["agent"], item["category"]) for item in actions["items"]}
+    assert ("client-agent", "managed_worktree_dirty") in categories
+    assert ("client-agent", "managed_worktree_ahead") in categories
+    assert ("battle-server-agent", "managed_worktree_behind") in categories
+    assert actions["by_agent"]["client-agent"] == 2
+    assert any("先收敛当前代码切片" in item["action"] for item in actions["items"])
+    assert any("不要继续堆 only-local 提交" in item["action"] for item in actions["items"])
+
+
+def check_repo_state_health_actions_are_actionable_chinese() -> None:
+    agents = {
+        agent_id: {
+            "repo": goal_agent_manager.AGENTS[agent_id]["repo"],
+            "status": "running",
+            "progress": True,
+            "key_available": True,
+            "worktree_state": {"missing": False, "dirty_count": 0, "ahead": 0, "behind": 0},
+        }
+        for agent_id in goal_agent_manager.MANAGED_AGENT_IDS
+    }
+    repo_state_risk = {
+        "items": [
+            {
+                "owner_agent": "nakama-server-agent",
+                "repo": "Gensoulkyo",
+                "priority": 8,
+                "category": "dirty_worktree",
+                "summary": "Gensoulkyo has 4 uncommitted item(s)",
+                "action": "old generic action",
+                "evidence": {
+                    "branch": "agent/gensoulkyo-lobby/20260629-0900",
+                    "dirty_count": 4,
+                },
+            },
+            {
+                "owner_agent": "battle-server-agent",
+                "repo": "PhK-BattleServer",
+                "priority": 65,
+                "category": "legacy_branch_checkout",
+                "summary": "legacy branch",
+                "action": "old generic action",
+                "evidence": {"branch": "agent/phk-battle-server/20260629-0030"},
+            },
+        ],
+        "top_items": [],
+    }
+
+    health = goal_agent_manager.build_agent_health(
+        agents,
+        repo_state_risk,
+        {"items": []},
+        {"items": []},
+        {"items": []},
+    )
+
+    nakama_actions = health["agents"]["nakama-server-agent"]["actions"]
+    battle_actions = health["agents"]["battle-server-agent"]["actions"]
+    assert any("先止血版本状态" in action and "dirty=4" in action for action in nakama_actions)
+    assert any("不要把 PhK-BattleServer root checkout" in action for action in battle_actions)
 
 
 def check_read_only_samples_do_not_persist_authoritative_state() -> None:
@@ -252,7 +378,10 @@ def check_exit_status_only_uses_runner_marker_line() -> None:
 
 def main() -> int:
     check_legacy_resource_risk_is_structured_not_managed()
+    check_running_log_staleness_becomes_resource_risk()
     check_agent_health_promotes_version_and_resource_risk()
+    check_managed_worktree_state_becomes_agent_actions()
+    check_repo_state_health_actions_are_actionable_chinese()
     check_read_only_samples_do_not_persist_authoritative_state()
     check_live_lock_log_is_preferred_over_latest_old_log()
     check_exit_status_only_uses_runner_marker_line()
