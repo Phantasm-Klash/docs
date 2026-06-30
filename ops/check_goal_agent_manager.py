@@ -361,6 +361,15 @@ def check_project_manager_prompt_sees_global_action_queue() -> None:
                     "action": "不要把 legacy 分支当基线",
                     "summary": "battle server legacy checkout",
                 },
+                {
+                    "agent": "audit-agent",
+                    "repo": "docs",
+                    "priority": 90,
+                    "category": "resource_risk",
+                    "action": "压缩报告和日志尾部",
+                    "summary": "audit-agent medium resource risk",
+                    "evidence": {"severity": "medium"},
+                },
             ]
         }
     }
@@ -370,6 +379,7 @@ def check_project_manager_prompt_sees_global_action_queue() -> None:
 
     assert "nakama-server-agent managed worktree is ahead=2" in manager_prompt
     assert "battle server legacy checkout" in manager_prompt
+    assert manager_prompt.splitlines()[0].startswith("- priority=7 category=managed_worktree_ahead")
     assert "当前没有 manager 写入的结构化下一步行动项" in client_prompt
 
 

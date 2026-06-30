@@ -397,37 +397,44 @@ def previous_next_action_prompt(agent_id: str, previous: dict[str, Any]) -> str:
         matching_items.append(item)
 
     lines: list[str] = []
-    resource_items = [
-        item
-        for item in matching_items
-        if item.get("category") == "resource_risk" and " low resource risk" not in str(item.get("summary") or "")
-    ]
-    work_items = [item for item in matching_items if item.get("category") != "resource_risk"]
-
-    for item in resource_items[:PROMPT_MAX_RESOURCE_ACTION_LINES]:
-        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
-        reasons = evidence.get("reasons") if isinstance(evidence.get("reasons"), list) else []
-        reason_text = prompt_clip(",".join(str(reason) for reason in reasons[:3]), 96)
-        reason_suffix = f" reasons={reason_text}" if reason_text else ""
-        severity = prompt_clip(evidence.get("severity") or "unknown", 24)
-        summary = prompt_clip(item.get("summary"), 96)
-        lines.append(
-            "- "
-            f"resource_limit priority={item.get('priority')} severity={severity} "
-            f"repo={prompt_clip(item.get('repo'), 64)} action={prompt_clip(item.get('action'))} "
-            f"summary={summary}{reason_suffix}"
+    resource_count = 0
+    matching_items.sort(
+        key=lambda item: (
+            int(item.get("priority", 99) or 99),
+            str(item.get("agent") or ""),
+            str(item.get("repo") or ""),
+            str(item.get("category") or ""),
         )
-
-    for item in work_items:
-        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
-        url = evidence.get("url")
-        url_text = f" {prompt_clip(url, 140)}" if url else ""
-        lines.append(
-            "- "
-            f"priority={item.get('priority')} category={item.get('category')} "
-            f"repo={prompt_clip(item.get('repo'), 64)} action={prompt_clip(item.get('action'))} "
-            f"summary={prompt_clip(item.get('summary'))}{url_text}"
-        )
+    )
+    for item in matching_items:
+        if item.get("category") == "resource_risk":
+            if " low resource risk" in str(item.get("summary") or ""):
+                continue
+            if resource_count >= PROMPT_MAX_RESOURCE_ACTION_LINES:
+                continue
+            evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+            reasons = evidence.get("reasons") if isinstance(evidence.get("reasons"), list) else []
+            reason_text = prompt_clip(",".join(str(reason) for reason in reasons[:3]), 96)
+            reason_suffix = f" reasons={reason_text}" if reason_text else ""
+            severity = prompt_clip(evidence.get("severity") or "unknown", 24)
+            summary = prompt_clip(item.get("summary"), 96)
+            lines.append(
+                "- "
+                f"resource_limit priority={item.get('priority')} severity={severity} "
+                f"repo={prompt_clip(item.get('repo'), 64)} action={prompt_clip(item.get('action'))} "
+                f"summary={summary}{reason_suffix}"
+            )
+            resource_count += 1
+        else:
+            evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+            url = evidence.get("url")
+            url_text = f" {prompt_clip(url, 140)}" if url else ""
+            lines.append(
+                "- "
+                f"priority={item.get('priority')} category={item.get('category')} "
+                f"repo={prompt_clip(item.get('repo'), 64)} action={prompt_clip(item.get('action'))} "
+                f"summary={prompt_clip(item.get('summary'))}{url_text}"
+            )
         if len(lines) >= PROMPT_MAX_NEXT_ACTION_LINES:
             break
     if not lines:
