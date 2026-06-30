@@ -302,6 +302,34 @@ def check_runtime_log_keeps_tail_only_for_failures() -> None:
     assert 0 < len(failed_info["diagnostic_tail"]) <= goal_agent_manager.LOG_DIAGNOSTIC_TAIL_CHARS
 
 
+def check_compact_summary_keeps_log_update_time() -> None:
+    compact = goal_agent_manager.compact_summary(
+        {
+            "agents": {
+                "client-agent": {
+                    "repo": "SpellKard",
+                    "status": "running",
+                    "key_alias": "spellkard",
+                    "workdir": "/tmp/SpellKard",
+                    "runtime_log": {
+                        "path": "/tmp/client.log",
+                        "updated_at": "2026-06-30T17:08:00Z",
+                        "bytes": 1200,
+                        "sampled_bytes": 1200,
+                        "tail_truncated": False,
+                        "token_usage": None,
+                        "exit_status": None,
+                    },
+                }
+            }
+        }
+    )
+
+    log = compact["agents"]["client-agent"]["log"]
+    assert log["updated_at"] == "2026-06-30T17:08:00Z"
+    assert "diagnostic_tail" not in log
+
+
 def check_no_start_is_non_authoritative() -> None:
     with tempfile.TemporaryDirectory() as raw_tmp:
         root = Path(raw_tmp)
@@ -331,6 +359,7 @@ def main() -> int:
     check_mail_summary_falls_back_when_primary_is_invalid()
     check_running_agent_prefers_lock_log_path()
     check_runtime_log_keeps_tail_only_for_failures()
+    check_compact_summary_keeps_log_update_time()
     check_no_start_is_non_authoritative()
     print("check_goal_agent_manager ok")
     return 0
