@@ -408,6 +408,34 @@ def check_exit_status_only_uses_runner_marker_line() -> None:
         assert info["exit_status"] == 0
 
 
+def check_compact_summary_keeps_log_update_time() -> None:
+    compact = goal_agent_manager.compact_summary(
+        {
+            "agents": {
+                "client-agent": {
+                    "repo": "SpellKard",
+                    "status": "running",
+                    "key_alias": "spellkard",
+                    "workdir": "/tmp/SpellKard",
+                    "runtime_log": {
+                        "path": "/tmp/client.log",
+                        "updated_at": "2026-06-30T17:08:00Z",
+                        "bytes": 1200,
+                        "sampled_bytes": 1200,
+                        "tail_truncated": False,
+                        "token_usage": None,
+                        "exit_status": None,
+                    },
+                }
+            }
+        }
+    )
+
+    log = compact["agents"]["client-agent"]["log"]
+    assert log["updated_at"] == "2026-06-30T17:08:00Z"
+    assert "diagnostic_tail" not in log
+
+
 def main() -> int:
     check_legacy_resource_risk_is_structured_not_managed()
     check_running_log_staleness_becomes_resource_risk()
@@ -418,6 +446,7 @@ def main() -> int:
     check_read_only_samples_do_not_persist_authoritative_state()
     check_live_lock_log_is_preferred_over_latest_old_log()
     check_exit_status_only_uses_runner_marker_line()
+    check_compact_summary_keeps_log_update_time()
     print("check_goal_agent_manager ok")
     return 0
 

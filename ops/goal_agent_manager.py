@@ -2268,6 +2268,7 @@ def compact_summary(summary: dict[str, Any]) -> dict[str, Any]:
                 "workdir": agent.get("workdir"),
                 "log": {
                     "path": runtime_log.get("path"),
+                    "updated_at": runtime_log.get("updated_at"),
                     "bytes": runtime_log.get("bytes"),
                     "sampled_bytes": runtime_log.get("sampled_bytes"),
                     "tail_truncated": runtime_log.get("tail_truncated"),
