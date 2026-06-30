@@ -1,55 +1,60 @@
 # audit-agent 阶段审计报告
 
-审计时间：2026-06-30 08:17 UTC
+审计时间：2026-06-30 08:32 UTC
 
 ## 总体判断
 
-- docs/dev 当前主线仍是 Phase 3：Nakama/Go 业务服、C++ BattleServer、PhK-Protocol 共享协议和 SpellKard 客户端投射收敛，服务器权威、协议冻结、持久化和生产级传输仍是最高优先级。
-- 当前管理面已从旧 scope roster 收敛到五个 `/goal` agent：client-agent、battle-server-agent、nakama-server-agent、audit-agent、project-manager-agent。旧 `change-describer`、`gensoulkyo-lobby`、`phk-battle-server`、`plan-auditor`、`spellkard-bullet`、`spellkard-ui` 只应归档，不应重新启动。
-- 最近阶段提交总体符合 docs/dev：client-agent 推进 Boss formation 和卡牌让渡本地预检；battle-server-agent 推进 Boss 权威 HP/伤害与结果投射；nakama-server-agent 推进房间审计和 matchmaking cancel 合同；PhK-Protocol 保持 golden replay/snapshot/mode-action fixture 稳定。
-- 新增 project-manager-agent 的方向合理：它承担跨 agent 计划收敛和 supervisor 节奏拆分，能降低 audit-agent 同时做审计和调度的职责混杂。project-manager-agent 已把 15 分钟 supervisor 与 docs agent 独立 worktree 切片提交为 `d573397 ops: add goal project manager supervision`。
-- 本机 `gh pr list` 仍被 `socks5h` 代理连接失败阻塞；但 GitHub 公网页面可读，当前可见 open PR 为 10：docs 0、SpellKard 7、Gensoulkyo 2、PhK-BattleServer 1、PhK-Protocol 0。邮件/manager 的 CLI 采集仍应标注未知，人工审计可用网页采样补足。
+- docs/dev 当前主线仍是 Phase 3：Nakama/Go 业务服、C++ BattleServer、PhK-Protocol 共享协议和 SpellKard 客户端投射收敛。服务器权威、协议冻结、持久化、生产传输和正式 UI 仍是最高优先级。
+- 最近 agent 提交总体符合 docs/dev 方向：client-agent 继续补 Boss/实例/世界 Boss 展示、服务端结果投射和输入绑定可用性；battle-server-agent 继续补 Boss transfer/replay/hash、match 清退和 start readiness；nakama-server-agent 继续补低频 business.event、Nakama RPC/WSS 合同和审计持久化；project-manager-agent 补三小时邮件 PR 失败可见性。
+- 管理面已收敛为 5 个 `/goal` agent：client-agent、battle-server-agent、nakama-server-agent、audit-agent、project-manager-agent。旧 `change-describer`、`gensoulkyo-lobby`、`phk-battle-server`、`plan-auditor`、`spellkard-bullet`、`spellkard-ui` 仍只应归档，不应重新启动。
+- GitHub PR 采样已经可用。本轮 open PR 总数为 11：docs 1、SpellKard 7、Gensoulkyo 2、PhK-BattleServer 1、PhK-Protocol 0。主要问题不是测试缺失，而是旧 PR behind/dirty、branch protection blocked 和本地 ahead 队列未整理。
+- 最新回归摘要仍为绿色：2026-06-30T06:00:23Z `ok=true`、`failed=0`。服务端相关 agent 的最近最终日志均记录了 `docker-compose` 和 protocol audit 证据；客户端记录了 Godot headless/static smoke 证据。
 
 ## 仓库状态
 
-- `docs`：`main...origin/main`，工作区干净。最新提交 `d573397 ops: add goal project manager supervision` 已包含 project-manager-agent、15 分钟 supervisor runner 和 systemd unit；audit-agent 自身报告提交为 `10466ac docs: refresh audit agent status report`。
-- `PhK-Protocol`：`main...origin/main`，工作区干净。最新本地提交 `b5452af Export golden replay summary fixture (#6)`，符合 v0.1 合同冻结方向。
-- `SpellKard`：`main...origin/main [ahead 34]`，工作区干净。本地 main 长期领先远端是主要版本流风险，应尽快推送、拆 PR 或明确保留本地队列的原因。
-- `Gensoulkyo`：`agent/gensoulkyo-lobby/20260629-0900...origin/agent/gensoulkyo-lobby/20260629-0900`，存在 4 个未提交 Nakama 绑定相关改动。改动方向属于 Phase 3 安全/传输边界，必须由 nakama-server-agent 完成测试、提交和 PR/说明，audit-agent 不接管。
-- `PhK-BattleServer`：`agent/phk-battle-server/20260629-0030...origin/agent/phk-battle-server/20260629-0030`，工作区干净。近期提交集中在加密会话、reconnect、decoded packet 和 replay/hash 边界。
+- `docs`：`main...origin/main [ahead 1]`，工作区在本轮编辑前干净。领先提交为 `f9b6fed ops: force manager proxy for github sampling`；另有 docs PR #20 `ops: show PR collection failures in brief mail`，check 通过但 `mergeStateStatus=BLOCKED`。
+- `PhK-Protocol`：`main...origin/main`，工作区干净。最新提交 `b5452af Export golden replay summary fixture (#6)`，符合 v0.1 golden replay/fixture 冻结方向；无 open PR。
+- `SpellKard`：`main...origin/main [ahead 34]`，工作区干净。仍是最高版本流风险；同时有 7 个旧 open PR，其中 #19/#17/#14 为 BEHIND，#18/#16/#15/#13 为 DIRTY，虽然各自 CI check 早前通过。
+- `Gensoulkyo` 主工作树：`agent/gensoulkyo-lobby/20260629-0900...origin/agent/gensoulkyo-lobby/20260629-0900`，仍有 4 个 Nakama 绑定相关未提交改动。它们靠近鉴权/传输边界，应由 nakama-server-agent 清理、测试、提交或明确废弃，audit-agent 不接管。
+- `PhK-BattleServer` 主工作树：`agent/phk-battle-server/20260629-0030...origin/agent/phk-battle-server/20260629-0030`，工作区干净。open PR #14 check 通过且 mergeStateStatus=CLEAN，但尚未合并。
 
 ## Agent 采样
 
-- client-agent worktree：`agent/client-agent/persistent...origin/agent/client-agent/persistent [ahead 4]`，工作区干净，最新提交 `32c61f1 Guard boss transfer requests locally`。本轮验证记录包含 `python3 tools/ci_static_checks.py` 与三个 Godot headless smoke。
-- battle-server-agent worktree：`agent/battle-server-agent/persistent...origin/agent/battle-server-agent/persistent [ahead 4]`，工作区干净，最新提交 `05cf7fe Project boss state into battle results`。本轮验证记录包含 `python3 tools/check_battle_server.py`、`docker-compose run --rm test` 和 protocol audit。
-- nakama-server-agent worktree：`agent/nakama-server-agent/persistent...origin/agent/nakama-server-agent/persistent`，工作区干净，最新提交 `0887477 Publish matchmaking cancel room rule`，已推送到远端同名分支。本轮验证记录包含 Go tests、`docker-compose --profile test run --rm test` 和 protocol audit。
-- project-manager-agent：当前 systemd transient unit 运行中，已提交 `d573397 ops: add goal project manager supervision`，把 docs agent 工作目录调整为独立 worktree 并增加 supervisor runner/systemd unit。最终日志暂未生成，但切片已进 `origin/main`。
-- audit-agent：本轮负责中文审计、报告和 docs 阶段提交，不触碰 project-manager-agent 的 ops 未完成工作。
+- client-agent worktree：`agent/client-agent/persistent...origin/agent/client-agent/persistent [ahead 7]`，工作区干净。最新提交 `35d8251 Expose input binding conflict hints`，本轮 final 记录三个提交：Boss result projection、modes page Boss result contract、input binding conflict hints。验证：`python3 tools/ci_static_checks.py`、`client_smoke_test.gd`、`boss_pattern_catalog_check.gd`、`client_ui_smoke_test.gd` 均通过；未触发 protocol audit。
+- battle-server-agent worktree：`agent/battle-server-agent/persistent...origin/agent/battle-server-agent/persistent [ahead 7]`，当前有未提交 `src/server.cpp` 和 `tests/battle_server_tests.cpp`，说明 08:24 后新一轮仍在实现中。上一轮已提交 `b1b4e9e`、`fd246be`、`cfae671`，验证 `python3 tools/check_battle_server.py`、`docker-compose run --rm test`、`protocol_audit_check.py` 通过。不要清退，但应要求本轮结束时提交/测试/推送或写清阻塞。
+- nakama-server-agent worktree：`agent/nakama-server-agent/persistent...origin/agent/nakama-server-agent/persistent`，工作区干净且已推送。最新提交 `48331a0 Document business event boundary` 和 `02072f8 Expose business WSS event contract`，验证 `go test ./runtime/... ./cmd/gensoulkyo_nakama`、`docker-compose --profile test run --rm test`、`protocol_audit_check.py`、`git diff --check` 通过。PR 创建仍未完成，GitHub open PR 仍是旧 `gensoulkyo-lobby` 分支。
+- project-manager-agent worktree：`agent/project-manager-agent/persistent...origin/agent/project-manager-agent/persistent`，工作区干净。PR #20 已创建，check 通过但 blocked。方向正确：三小时简报在 PR 采集失败时列出失败仓库和已采集 PR 数，避免把未知误报成 0。
+- audit-agent：本轮更新审计报告和邮件输入，重点是把 08:24 后最新 agent final、open PR 和 worktree 风险写清，供三小时邮件正文优先采用。
+
+## PR 与合并风险
+
+- docs #20：`ops: show PR collection failures in brief mail`，auto-merge check 通过，mergeStateStatus=BLOCKED。需要 branch protection/merge gate 处理。
+- SpellKard #13-#19：7 个旧 PR 全部 check 曾通过，但多数 behind/dirty；叠加本地主仓 ahead 34 和 client-agent persistent ahead 7，客户端版本流需要集中整理，不宜继续无限本地堆提交。
+- Gensoulkyo #16/#17：均 CLEAN 且 server-contract-tests/auto-merge 通过，但仍未合并。与此同时 nakama-server-agent 新 persistent 分支已推送但未开 PR，主工作树仍 dirty 4。
+- PhK-BattleServer #14：CLEAN 且 battle-server-checks/auto-merge 通过，但未合并。battle-server-agent persistent 分支又 ahead 7 且有新未提交改动，需防止旧 PR 与新切片长期分叉。
+- PhK-Protocol：无 open PR，当前作为协议 fixture 基线稳定。
 
 ## 风险与清退建议
 
-- 旧 roster 记录仍列出 `change-describer`、`gensoulkyo-lobby`、`phk-battle-server`、`plan-auditor`、`spellkard-bullet`、`spellkard-ui`。它们不应再作为活动 agent；若系统中还有旧 unit、锁或旧 PR，应只做归档、关闭或迁移到四个新 agent，不应继续消耗 token。
-- `SpellKard` 本地 main ahead 34 是当前最大的版本发布风险，容易让三小时审计无法判断哪些提交已进入远端 CI/PR。
-- `Gensoulkyo` 主工作树和 nakama-server-agent worktree 都有未提交服务端改动，且接近鉴权/传输/数据库边界；提交前必须有 `go test`、`docker-compose` 或 protocol audit 证据。
-- docs 当前已清理为干净，project-manager/supervisor 改动已提交并推到 `origin/main`。后续风险从“未提交”转为“需要继续观察 15 分钟 supervisor 是否稳定、是否会与三小时邮件 runner 争抢 manager lock”。
-- battle-server-agent 当前 worktree 已清理为干净，但本地 ahead 4 尚未推送/PR。若后续继续涉及协议、网络、战斗服、鉴权或安全边界，应继续跑 `/root/gotouhou/docs/ops/protocol_audit_check.py`。
-- Token 风险仍高：多个 agent 日志已进入数万行/大体量状态。后续报告应只保留提交、测试、阻塞和下一步，避免粘贴长 diff 或长命令输出。
-- GitHub 网页显示仍有 10 个 open PR，尤其 SpellKard 7 个旧 PR 与本地 main ahead 34 叠加，说明客户端版本流需要集中整理。
+- 不建议清退 5 个新 goal agent；它们均有近期输出或运行状态。需要清退/冻结的是旧 scope roster：`change-describer`、`gensoulkyo-lobby`、`phk-battle-server`、`plan-auditor`、`spellkard-bullet`、`spellkard-ui` 不应再被 manager 启动。
+- 版本流最高风险仍是 SpellKard：`main` ahead 34、7 个旧 PR、client-agent persistent ahead 7。下一步应优先做客户端分支/PR 队列整理，而不是继续堆无远端可见提交。
+- 服务端风险集中在 Gensoulkyo 主工作树 dirty 4 与 BattleServer persistent 新 dirty 2。两者都靠近协议/网络/鉴权/战斗服边界，提交前必须保留 `docker-compose` 与 protocol audit 证据。
+- Token 消耗风险偏高：最近 audit-agent、battle-server-agent 单轮已出现 50 万到 70 万级 token 记录。后续 agent final 和邮件正文必须压缩为提交、测试、阻塞、下一步，不应粘贴长 diff 或长命令输出。
+- docs #20 blocked 与 docs `main` ahead 1 会让邮件/manager 改进分散在两个版本流中。建议先处理 docs 版本流，再让 project-manager 继续推进其他仓合并节奏。
 
 ## 测试证据
 
-- 最新 manager 回归摘要（2026-06-30T06:00:23Z）：ok=true、failed=0。
-- 已有回归包含 SpellKard Godot headless UI、Boss pattern headless、跨仓 protocol audit、Gensoulkyo `docker-compose config`、PhK-BattleServer `docker-compose config`。
-- audit-agent 本轮将运行人格文档最小检查：
+- 最新全局回归摘要：2026-06-30T06:00:23Z，`ok=true`、`failed=0`。
+- 回归覆盖：SpellKard Godot headless UI、Boss pattern headless、跨仓 protocol audit、Gensoulkyo `docker-compose config`、PhK-BattleServer `docker-compose config`。
+- 本轮 audit-agent 最小检查：
   - `python3 -m py_compile ops/goal_agent_manager.py ops/hourly_progress_mail.py`
   - `python3 ops/goal_agent_manager.py --dry-run --root /root/gotouhou`
-- 本轮只改 docs 审计报告，不改协议、网络、匹配、战斗服、鉴权或安全代码，因此 audit-agent 自身不触发 protocol audit。
+- 本轮只更新 docs 审计报告和邮件报告输入，不改协议、网络、匹配、战斗服、鉴权或安全代码，因此 audit-agent 自身不触发 protocol audit。
 
 ## 下一步
 
-- 恢复 GitHub 连接后重新采样 open PR、CI、behind/dirty 和分支保护状态。
-- client-agent：优先处理 SpellKard 本地 main ahead 34 的同步/PR 风险，并继续用 Godot headless 证明 UI/弹幕合同。
-- project-manager-agent：继续观察 15 分钟 supervisor 运行，补最终日志和邮件报告中的网页 PR 采样兜底，避免 CLI 代理失败时只显示未知。
-- battle-server-agent：推送/开 PR 或说明本地 ahead 4，继续推进 Boss/PVP 1v1 authoritative tick、replay/hash 和结果签名边界。
-- nakama-server-agent：清理主 Gensoulkyo 工作树 4 个未提交 Nakama 绑定改动，优先完成 Nakama SDK tag build、PostgreSQL audit wiring 和业务 WSS/RPC envelope 证据。
-- audit-agent：三小时邮件正文继续以中文短审计为准，避免把 GitHub 查询失败误报为 open PR 为 0。
+- project-manager-agent：处理 docs PR #20 blocked，并同步 docs `main` ahead 状态，保证三小时邮件改进进入远端主线。
+- client-agent：暂停继续堆大块本地功能，先整理 SpellKard ahead 34、persistent ahead 7 和 7 个旧 PR 的合并/关闭/重建策略。
+- battle-server-agent：完成当前 `src/server.cpp` / `tests/battle_server_tests.cpp` 切片，跑 `python3 tools/check_battle_server.py`、`docker-compose run --rm test` 和 protocol audit 后提交。
+- nakama-server-agent：为 persistent 分支创建 PR 或说明网络阻塞；清理主 Gensoulkyo dirty 4，继续推进真实 Nakama SDK tag build 与 PostgreSQL repository wiring。
+- audit-agent：继续用中文短审计跟踪 PR、dirty work、agent token 和测试证据；三小时邮件只保留结论、风险和下一步。
