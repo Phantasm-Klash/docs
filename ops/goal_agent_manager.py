@@ -279,6 +279,7 @@ def agent_operating_limits(agent_id: str) -> str:
     specific: dict[str, list[str]] = {
         "client-agent": [
             "- 不允许长期停留在 only-local ahead 状态；必须 push/开 PR，或在 final 中写明无法开 PR 的具体原因。",
+            "- 若 managed worktree ahead 超过 2 个提交，下一轮首要任务是 push/开 PR/拆小 PR，不能继续堆新功能。",
             "- 优先交付 headless 可验证的弹幕/玩法/协议合同，不把纯渲染失败误判为功能失败。",
         ],
         "battle-server-agent": [
@@ -287,16 +288,19 @@ def agent_operating_limits(agent_id: str) -> str:
         ],
         "nakama-server-agent": [
             "- 新增 Nakama 功能前先处理 Gensoulkyo 根 checkout 的 dirty/ahead/PR 风险，或明确迁移/废弃理由。",
+            "- 如果 Gensoulkyo 根 checkout 仍有 dirty 项，本轮第一步必须给出 disposition：吸收到 managed branch、提交/PR、或写明 supersede/废弃依据；未处理前不要开新功能切片。",
             "- 业务服只负责资格、队列、ticket、回调和审计；不得把高频战斗 tick 做成 Go 权威路径。",
         ],
         "audit-agent": [
             "- 审计默认只读；如需修改 ops/report，使用 docs 独立分支或 worktree，避免覆盖开发 agent 的业务改动。",
+            "- 使命是中文方向审计、PR/状态审计、短报告和风险识别；默认不实现业务代码，不复制长日志。",
             "- `--no-start` 只能用于本地只读采样，不能把结果当成权威 watchdog 状态，不能写入 summary。",
         ],
         "project-manager-agent": [
             "- 只做项目推进、调度、评分、提示词和版本流程管理；不得直接实现 client/battle/nakama 业务代码。",
             "- 每轮读取 docs/dev、agent 日志、PR、回归和 git 状态，给低分 agent 写清下一步小切片、测试和 PR 要求。",
             "- 可以修改 docs/ops 的 manager、邮件、提示词和队列逻辑；业务修复必须分派给对应 owning agent 或单独 fix agent。",
+            "- 合并或推动合并 PR 后，必须立即运行正常 manager 复采样，刷新 summary/actions/mail 输入，避免已合并 PR 继续出现在下一步行动里。",
             "- 只按 agent 身份管理，禁止恢复旧 scope/路径分片模型。",
         ],
     }
@@ -521,6 +525,29 @@ def collect_repo(root: Path, name: str) -> dict[str, Any]:
         "dirty_count": len(dirty),
         "dirty": dirty[:20],
         "commits_last_interval": recent.splitlines() if recent else [],
+    }
+
+
+def collect_git_worktree_state(path: Path) -> dict[str, Any]:
+    if not (path / ".git").exists():
+        return {"path": str(path), "missing": True}
+    branch = run_command(["git", "branch", "--show-current"], path)[1]
+    head = run_command(["git", "rev-parse", "--short", "HEAD"], path)[1]
+    status = run_command(["git", "status", "--short", "--branch"], path)[1]
+    dirty = [line for line in status.splitlines() if line and not line.startswith("## ")]
+    branch_info = repo_status_branch_info(status)
+    return {
+        "path": str(path),
+        "missing": False,
+        "branch": branch,
+        "head": head,
+        "status": status,
+        "dirty_count": len(dirty),
+        "dirty": dirty[:20],
+        "ahead": int(branch_info.get("ahead", 0) or 0),
+        "behind": int(branch_info.get("behind", 0) or 0),
+        "tracking": branch_info.get("tracking"),
+        "diverged": bool(branch_info.get("diverged")),
     }
 
 
@@ -1574,6 +1601,28 @@ def build_agent_health(
             reasons.append("本轮未记录 progress 信号")
             actions.append("下一轮必须写 final、commit/PR、测试或阻塞说明")
 
+        worktree_state = raw_agent.get("worktree_state") if isinstance(raw_agent.get("worktree_state"), dict) else {}
+        if worktree_state.get("missing"):
+            score -= 15
+            reasons.append("agent worktree 不存在或不是 git 仓库")
+            actions.append("修复 agent 独立 worktree 后再继续")
+        else:
+            dirty_count = int(worktree_state.get("dirty_count", 0) or 0)
+            ahead = int(worktree_state.get("ahead", 0) or 0)
+            behind = int(worktree_state.get("behind", 0) or 0)
+            if dirty_count:
+                score -= min(12, 4 + dirty_count)
+                reasons.append(f"agent worktree dirty={dirty_count}")
+                actions.append("先整理 worktree dirty：提交、开 PR、或记录明确废弃理由")
+            if ahead:
+                score -= 15 if ahead >= 5 else 8
+                reasons.append(f"agent worktree ahead={ahead}")
+                actions.append("推送 ahead 提交并开/更新 PR，或在 final 写明无法推送原因")
+            if behind:
+                score -= 6
+                reasons.append(f"agent worktree behind={behind}")
+                actions.append("同步最新 origin/main 或对应 managed branch 后再扩展功能")
+
         resource = resource_by_agent.get(agent_id, {})
         severity = str(resource.get("severity") or "low")
         if severity == "high":
@@ -1626,6 +1675,7 @@ def build_agent_health(
             "agent": agent_id,
             "repo": raw_agent.get("repo") or AGENTS[agent_id]["repo"],
             "status": status,
+            "worktree_state": worktree_state,
             "score": score,
             "label": health_label(score),
             "reasons": reasons[:8],
@@ -1956,6 +2006,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             "workspace_path": paths["workspace"],
             "key_alias": key_assignment.get("alias"),
             "key_available": key_assignment.get("available"),
+            "worktree_state": collect_git_worktree_state(workdir),
             "lock": lock,
             "runtime_log": log,
             "status": status,
@@ -2006,8 +2057,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     if should_persist:
         atomic_write_text(audit_path, audit_text)
         atomic_write_text(plan_path, audit_text)
-        if summary["started_count"] == 0:
-            refresh_personas_from_summary(root, summary)
+        refresh_personas_from_summary(root, summary)
     summary["reports"] = {
         "plan_audit": {
             "path": str(plan_path),

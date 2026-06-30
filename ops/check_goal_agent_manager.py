@@ -55,30 +55,35 @@ def check_agent_health_promotes_version_and_resource_risk() -> None:
             "status": "running",
             "progress": True,
             "key_available": True,
+            "worktree_state": {"missing": False, "dirty_count": 0, "ahead": 6, "behind": 0},
         },
         "battle-server-agent": {
             "repo": "PhK-BattleServer",
             "status": "running",
             "progress": True,
             "key_available": True,
+            "worktree_state": {"missing": False, "dirty_count": 0, "ahead": 0, "behind": 0},
         },
         "nakama-server-agent": {
             "repo": "Gensoulkyo",
             "status": "running",
             "progress": True,
             "key_available": True,
+            "worktree_state": {"missing": False, "dirty_count": 0, "ahead": 0, "behind": 0},
         },
         "audit-agent": {
             "repo": "docs",
             "status": "running",
             "progress": True,
             "key_available": True,
+            "worktree_state": {"missing": False, "dirty_count": 0, "ahead": 0, "behind": 0},
         },
         "project-manager-agent": {
             "repo": "docs",
             "status": "running",
             "progress": True,
             "key_available": True,
+            "worktree_state": {"missing": False, "dirty_count": 0, "ahead": 0, "behind": 0},
         },
     }
     repo_state_risk = {
@@ -123,8 +128,9 @@ def check_agent_health_promotes_version_and_resource_risk() -> None:
     assert health["score"] == health["average_score"]
     assert health["label"] == goal_agent_manager.health_label(health["average_score"])
     assert health["agents"]["client-agent"]["score"] < health["agents"]["battle-server-agent"]["score"]
-    assert "client-agent" not in health["low_score_agents"]
+    assert "client-agent" in health["low_score_agents"]
     assert any("资源风险 high" in reason for reason in health["agents"]["client-agent"]["reasons"])
+    assert any("agent worktree ahead=6" in reason for reason in health["agents"]["client-agent"]["reasons"])
     mail_lines = hourly_progress_mail.agent_health_lines({"agent_health": health})
     assert any("client-agent" in line and "score=" in line for line in mail_lines)
 
