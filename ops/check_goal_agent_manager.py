@@ -262,6 +262,38 @@ def check_repo_state_health_actions_are_actionable_chinese() -> None:
     assert any("不要把 PhK-BattleServer root checkout" in action for action in battle_actions)
 
 
+def check_project_manager_prompt_sees_global_action_queue() -> None:
+    previous = {
+        "next_agent_actions": {
+            "items": [
+                {
+                    "agent": "nakama-server-agent",
+                    "repo": "Gensoulkyo",
+                    "priority": 7,
+                    "category": "managed_worktree_ahead",
+                    "action": "先推送 ahead 提交并开/更新 PR",
+                    "summary": "nakama-server-agent managed worktree is ahead=2",
+                },
+                {
+                    "agent": "battle-server-agent",
+                    "repo": "PhK-BattleServer",
+                    "priority": 65,
+                    "category": "legacy_branch_checkout",
+                    "action": "不要把 legacy 分支当基线",
+                    "summary": "battle server legacy checkout",
+                },
+            ]
+        }
+    }
+
+    manager_prompt = goal_agent_manager.previous_next_action_prompt("project-manager-agent", previous)
+    client_prompt = goal_agent_manager.previous_next_action_prompt("client-agent", previous)
+
+    assert "nakama-server-agent managed worktree is ahead=2" in manager_prompt
+    assert "battle server legacy checkout" in manager_prompt
+    assert "当前没有 manager 写入的结构化下一步行动项" in client_prompt
+
+
 def check_read_only_samples_do_not_persist_authoritative_state() -> None:
     with tempfile.TemporaryDirectory(prefix="goal-agent-manager-check-") as tmp:
         root = Path(tmp)
@@ -382,6 +414,7 @@ def main() -> int:
     check_agent_health_promotes_version_and_resource_risk()
     check_managed_worktree_state_becomes_agent_actions()
     check_repo_state_health_actions_are_actionable_chinese()
+    check_project_manager_prompt_sees_global_action_queue()
     check_read_only_samples_do_not_persist_authoritative_state()
     check_live_lock_log_is_preferred_over_latest_old_log()
     check_exit_status_only_uses_runner_marker_line()

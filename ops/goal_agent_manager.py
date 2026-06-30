@@ -378,7 +378,7 @@ def previous_next_action_prompt(agent_id: str, previous: dict[str, Any]) -> str:
     matching_items: list[dict[str, Any]] = []
     for raw_item in items:
         item = raw_item if isinstance(raw_item, dict) else {}
-        if item.get("agent") != agent_id:
+        if agent_id != "project-manager-agent" and item.get("agent") != agent_id:
             continue
         matching_items.append(item)
 
