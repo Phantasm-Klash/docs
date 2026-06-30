@@ -248,6 +248,19 @@ def atomic_write_text(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
+def report_metadata(path: Path, *, text: str | None = None, updated_at: str | None = None) -> dict[str, Any]:
+    record: dict[str, Any] = {"path": str(path)}
+    if updated_at is not None:
+        record["updated_at"] = updated_at
+    elif path.exists():
+        record["updated_at"] = iso(dt.datetime.fromtimestamp(path.stat().st_mtime, UTC))
+    else:
+        record["updated_at"] = None
+    if text is not None:
+        record["text"] = text[:3000]
+    return record
+
+
 def load_keyring(path: Path) -> dict[str, str]:
     aliases: dict[str, str] = {}
     if not path.exists():
@@ -2259,20 +2272,15 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     audit_path = reports_dir / "audit-agent-latest.md"
     plan_path = reports_dir / "plan-audit-latest.md"
     if should_persist:
+        report_updated_at = iso(utcnow())
         atomic_write_text(audit_path, audit_text)
         atomic_write_text(plan_path, audit_text)
         refresh_personas_from_summary(root, summary)
+    else:
+        report_updated_at = None
     summary["reports"] = {
-        "plan_audit": {
-            "path": str(plan_path),
-            "updated_at": iso(utcnow()),
-            "text": audit_text[:3000],
-        },
-        "audit_report": {
-            "path": str(audit_path),
-            "updated_at": iso(utcnow()),
-            "text": audit_text[:3000],
-        },
+        "plan_audit": report_metadata(plan_path, text=audit_text if should_persist else None, updated_at=report_updated_at),
+        "audit_report": report_metadata(audit_path, text=audit_text if should_persist else None, updated_at=report_updated_at),
     }
     if args.no_start:
         summary["non_authoritative_reason"] = "--no-start does not launch agents and must not overwrite watchdog state"
