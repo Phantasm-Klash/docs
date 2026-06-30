@@ -235,6 +235,24 @@ def check_running_agent_prefers_lock_log_path() -> None:
     assert running_log["token_usage"] is None
 
 
+def check_runtime_log_keeps_tail_only_for_failures() -> None:
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        tmp = Path(raw_tmp)
+        running_log = tmp / "client-agent-20260630T153135Z.log"
+        failed_log = tmp / "client-agent-20260630T153600Z.log"
+        running_log.write_text("normal progress line\n" * 200, encoding="utf-8")
+        failed_log.write_text(("failure context line\n" * 200) + "[goal-manager] exited status=1\n", encoding="utf-8")
+
+        running_info = goal_agent_manager.log_info(running_log)
+        failed_info = goal_agent_manager.log_info(failed_log)
+
+    assert running_info["sampled_bytes"] <= goal_agent_manager.LOG_SAMPLE_BYTES
+    assert "tail" not in running_info
+    assert "diagnostic_tail" not in running_info
+    assert "tail" not in failed_info
+    assert 0 < len(failed_info["diagnostic_tail"]) <= goal_agent_manager.LOG_DIAGNOSTIC_TAIL_CHARS
+
+
 def check_no_start_is_non_authoritative() -> None:
     with tempfile.TemporaryDirectory() as raw_tmp:
         root = Path(raw_tmp)
@@ -262,6 +280,7 @@ def main() -> int:
     check_dirty_repo_owner_prefers_active_workdir_agent()
     check_mail_summary_falls_back_when_primary_is_invalid()
     check_running_agent_prefers_lock_log_path()
+    check_runtime_log_keeps_tail_only_for_failures()
     check_no_start_is_non_authoritative()
     print("check_goal_agent_manager ok")
     return 0

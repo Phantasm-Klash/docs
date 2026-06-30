@@ -34,8 +34,8 @@ TOKEN_MEDIUM_RISK = 200_000
 TOKEN_HIGH_RISK = 500_000
 LOG_BYTES_MEDIUM_RISK = 1_000_000
 LOG_BYTES_HIGH_RISK = 3_000_000
-LOG_SAMPLE_BYTES = 64_000
-LOG_TAIL_CHARS = 800
+LOG_SAMPLE_BYTES = 16_000
+LOG_DIAGNOSTIC_TAIL_CHARS = 400
 PROMPT_MAX_NEXT_ACTION_LINES = 6
 PROMPT_MAX_RESOURCE_ACTION_LINES = 2
 PROMPT_MAX_TEXT_CHARS = 180
@@ -493,7 +493,7 @@ def log_info(path: Path | None) -> dict[str, Any]:
     token_matches = list(re.finditer(r"tokens used\s*\n\s*([0-9,]+)", text, flags=re.IGNORECASE))
     if token_matches:
         token_usage = int(token_matches[-1].group(1).replace(",", ""))
-    return {
+    info = {
         "exists": True,
         "path": str(path),
         "updated_at": iso(dt.datetime.fromtimestamp(stat.st_mtime, UTC)),
@@ -505,8 +505,10 @@ def log_info(path: Path | None) -> dict[str, Any]:
         "exited": exit_status is not None,
         "exit_status": exit_status,
         "token_usage": token_usage,
-        "tail": text[-LOG_TAIL_CHARS:],
     }
+    if exit_status is not None and exit_status != 0:
+        info["diagnostic_tail"] = text[-LOG_DIAGNOSTIC_TAIL_CHARS:]
+    return info
 
 
 def collect_repo(root: Path, name: str) -> dict[str, Any]:
