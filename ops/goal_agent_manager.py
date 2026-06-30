@@ -323,7 +323,7 @@ def previous_next_action_prompt(agent_id: str, previous: dict[str, Any]) -> str:
             f"repo={item.get('repo')} action={item.get('action')} "
             f"summary={item.get('summary')}{url_text}"
         )
-        if len(lines) >= 5:
+        if len(lines) >= 8:
             break
     if not lines:
         return "- 当前没有 manager 写入的结构化下一步行动项；按 docs/dev 和当前仓库状态选择最小切片。"
@@ -411,6 +411,182 @@ def collect_repo(root: Path, name: str) -> dict[str, Any]:
         "dirty_count": len(dirty),
         "dirty": dirty[:20],
         "commits_last_interval": recent.splitlines() if recent else [],
+    }
+
+
+def repo_owner_agent(repo_name: str, branch: object = "") -> str:
+    branch_name = str(branch or "")
+    if repo_name == "SpellKard":
+        return "client-agent"
+    if repo_name == "Gensoulkyo":
+        return "nakama-server-agent"
+    if repo_name == "PhK-BattleServer":
+        return "battle-server-agent"
+    if repo_name == "PhK-Protocol":
+        return "audit-agent"
+    if repo_name == "docs":
+        if "audit-agent" in branch_name:
+            return "audit-agent"
+        return "project-manager-agent"
+    return "project-manager-agent"
+
+
+def repo_status_branch_info(status: object) -> dict[str, Any]:
+    lines = str(status or "").splitlines()
+    header = next((line for line in lines if line.startswith("## ")), "")
+    info: dict[str, Any] = {
+        "header": header,
+        "tracking": "",
+        "ahead": 0,
+        "behind": 0,
+        "diverged": False,
+    }
+    if not header:
+        return info
+    branch_text = header[3:]
+    status_match = re.search(r"\[([^\]]+)\]", branch_text)
+    if "..." in branch_text:
+        info["tracking"] = branch_text.split("...", 1)[1].split(" [", 1)[0].strip()
+    if not status_match:
+        return info
+    for part in (piece.strip() for piece in status_match.group(1).split(",")):
+        ahead_match = re.search(r"ahead\s+(\d+)", part)
+        behind_match = re.search(r"behind\s+(\d+)", part)
+        if ahead_match:
+            info["ahead"] = int(ahead_match.group(1))
+        if behind_match:
+            info["behind"] = int(behind_match.group(1))
+    info["diverged"] = bool(info["ahead"] and info["behind"])
+    return info
+
+
+def expected_repo_branches(repo_name: str) -> set[str]:
+    branches = {str(agent.get("branch") or "") for agent in AGENTS.values() if agent.get("repo") == repo_name}
+    branches.discard("")
+    branches.add("main")
+    return branches
+
+
+def build_repo_state_risk(repos: dict[str, Any]) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    by_repo: dict[str, int] = {}
+    by_agent: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+
+    for repo_name, raw_repo in sorted(repos.items()):
+        repo = raw_repo if isinstance(raw_repo, dict) else {}
+        if repo.get("missing"):
+            owner = repo_owner_agent(repo_name)
+            items.append(
+                {
+                    "repo": repo_name,
+                    "owner_agent": owner,
+                    "priority": 12,
+                    "category": "repo_missing",
+                    "summary": f"{repo_name} repository missing at {repo.get('path')}",
+                    "action": "restore the repository checkout before scheduling work",
+                    "evidence": {"path": repo.get("path")},
+                }
+            )
+            continue
+
+        branch = str(repo.get("branch") or "")
+        owner = repo_owner_agent(repo_name, branch)
+        dirty_count = int(repo.get("dirty_count", 0) or 0)
+        branch_info = repo_status_branch_info(repo.get("status"))
+        ahead = int(branch_info.get("ahead", 0) or 0)
+        behind = int(branch_info.get("behind", 0) or 0)
+        expected_branches = expected_repo_branches(repo_name)
+
+        if dirty_count:
+            priority = 8 if repo_name in {"Gensoulkyo", "PhK-BattleServer", "PhK-Protocol"} else 18
+            items.append(
+                {
+                    "repo": repo_name,
+                    "owner_agent": owner,
+                    "priority": priority,
+                    "category": "dirty_worktree",
+                    "summary": f"{repo_name} has {dirty_count} uncommitted item(s) on {branch}",
+                    "action": "inspect the dirty work, preserve useful changes in a small commit/PR, or document explicit discard/supersede",
+                    "evidence": {
+                        "branch": branch,
+                        "head": repo.get("head"),
+                        "dirty_count": dirty_count,
+                        "dirty": repo.get("dirty"),
+                    },
+                }
+            )
+
+        if ahead:
+            items.append(
+                {
+                    "repo": repo_name,
+                    "owner_agent": owner,
+                    "priority": 16 if repo_name == "SpellKard" else 45,
+                    "category": "local_ahead",
+                    "summary": f"{repo_name} {branch} is ahead of upstream by {ahead} commit(s)",
+                    "action": "push or convert the local commits into a current-base PR, then sync the owning managed branch",
+                    "evidence": {
+                        "branch": branch,
+                        "head": repo.get("head"),
+                        "status_header": branch_info.get("header"),
+                        "ahead": ahead,
+                        "behind": behind,
+                    },
+                }
+            )
+
+        if behind:
+            items.append(
+                {
+                    "repo": repo_name,
+                    "owner_agent": owner,
+                    "priority": 50,
+                    "category": "local_behind",
+                    "summary": f"{repo_name} {branch} is behind upstream by {behind} commit(s)",
+                    "action": "update the checkout before using it as a baseline for new work",
+                    "evidence": {
+                        "branch": branch,
+                        "head": repo.get("head"),
+                        "status_header": branch_info.get("header"),
+                        "ahead": ahead,
+                        "behind": behind,
+                    },
+                }
+            )
+
+        if branch and branch not in expected_branches and branch.startswith("agent/"):
+            items.append(
+                {
+                    "repo": repo_name,
+                    "owner_agent": owner,
+                    "priority": 65,
+                    "category": "legacy_branch_checkout",
+                    "summary": f"{repo_name} root checkout is on legacy/non-managed branch {branch}",
+                    "action": "avoid using this root checkout as the canonical baseline; migrate any useful work into the owning managed agent branch",
+                    "evidence": {
+                        "branch": branch,
+                        "head": repo.get("head"),
+                        "expected_branches": sorted(expected_branches),
+                    },
+                }
+            )
+
+    items.sort(key=lambda item: (int(item.get("priority", 99) or 99), str(item.get("repo", "")), str(item.get("category", ""))))
+    for item in items:
+        repo = str(item.get("repo") or "unknown")
+        owner = str(item.get("owner_agent") or "unknown")
+        category = str(item.get("category") or "unknown")
+        by_repo[repo] = by_repo.get(repo, 0) + 1
+        by_agent[owner] = by_agent.get(owner, 0) + 1
+        by_category[category] = by_category.get(category, 0) + 1
+    return {
+        "count": len(items),
+        "by_repo": by_repo,
+        "by_owner_agent": by_agent,
+        "by_category": by_category,
+        "items": items,
+        "top_items": items[:10],
     }
 
 
@@ -509,20 +685,12 @@ def review_gate_detail(review_gate: dict[str, Any]) -> str:
 
 def pull_request_owner_agent(repo_name: str, head_ref: object) -> str:
     head = str(head_ref or "")
-    if repo_name == "SpellKard":
-        return "client-agent"
-    if repo_name == "Gensoulkyo":
-        return "nakama-server-agent"
-    if repo_name == "PhK-BattleServer":
-        return "battle-server-agent"
-    if repo_name == "PhK-Protocol":
-        return "audit-agent"
     if repo_name == "docs":
         if "audit-agent" in head:
             return "audit-agent"
         if "project-manager-agent" in head:
             return "project-manager-agent"
-    return "project-manager-agent"
+    return repo_owner_agent(repo_name, head)
 
 
 def merge_review_gate(repo_name: str, item: dict[str, Any]) -> dict[str, Any]:
@@ -1068,8 +1236,26 @@ def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) ->
     }
 
 
-def build_next_agent_actions(pull_request_queue: dict[str, Any], resource_risk: dict[str, Any]) -> dict[str, Any]:
+def build_next_agent_actions(
+    pull_request_queue: dict[str, Any],
+    resource_risk: dict[str, Any],
+    repo_state_risk: dict[str, Any],
+) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
+
+    for raw_item in repo_state_risk.get("top_items", []):
+        item = raw_item if isinstance(raw_item, dict) else {}
+        items.append(
+            {
+                "agent": str(item.get("owner_agent") or "project-manager-agent"),
+                "repo": str(item.get("repo") or "unknown"),
+                "priority": int(item.get("priority", 40) or 40),
+                "category": str(item.get("category") or "repo_state"),
+                "summary": str(item.get("summary") or ""),
+                "action": str(item.get("action") or "inspect repository state"),
+                "evidence": item.get("evidence") if isinstance(item.get("evidence"), dict) else {},
+            }
+        )
 
     for raw_group in pull_request_queue.get("supersede_groups", []):
         group = raw_group if isinstance(raw_group, dict) else {}
@@ -1186,6 +1372,7 @@ def build_audit_report(summary: dict[str, Any]) -> str:
     regression = summary.get("regression") if isinstance(summary.get("regression"), dict) else {}
     pull_requests = summary.get("pull_requests") if isinstance(summary.get("pull_requests"), dict) else {}
     pull_request_queue = summary.get("pull_request_queue") if isinstance(summary.get("pull_request_queue"), dict) else {}
+    repo_state_risk = summary.get("repo_state_risk") if isinstance(summary.get("repo_state_risk"), dict) else {}
     resource_risk = summary.get("agent_resource_risk") if isinstance(summary.get("agent_resource_risk"), dict) else {}
     next_actions = summary.get("next_agent_actions") if isinstance(summary.get("next_agent_actions"), dict) else {}
 
@@ -1297,6 +1484,23 @@ def build_audit_report(summary: dict[str, Any]) -> str:
                 f"{item.get('agent')} {item.get('severity')} tokens={token_text} "
                 f"log_bytes={item.get('log_bytes')} action={item.get('action')}"
             )
+    repo_risk_lines = [
+        (
+            "- 仓库状态风险："
+            f"count={repo_state_risk.get('count', 0)}；"
+            f"by_repo={repo_state_risk.get('by_repo', {})}；"
+            f"by_owner={repo_state_risk.get('by_owner_agent', {})}；"
+            f"by_category={repo_state_risk.get('by_category', {})}。"
+        )
+    ]
+    for item in repo_state_risk.get("top_items", [])[:8]:
+        if isinstance(item, dict):
+            repo_risk_lines.append(
+                "- "
+                f"{item.get('owner_agent')} -> {item.get('repo')} priority={item.get('priority')} "
+                f"category={item.get('category')} action={item.get('action')} "
+                f"summary={item.get('summary')}"
+            )
     next_action_lines = [
         (
             "- 下一步行动项："
@@ -1343,6 +1547,7 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             "",
             f"- 当前 dirty 仓库：{', '.join(dirty_repos) if dirty_repos else '无'}。",
             pr_line,
+            *repo_risk_lines,
             *pr_queue_lines,
             "- 新 agent 使用独立 worktree/工作目录，避免直接覆盖旧 agent 未提交内容；审计 agent 继续判断旧 dirty work 是否应整理成 PR 或废弃。",
             "- 简单线性改动可阶段性提交；跨仓、协议/网络/安全、回归修复和并行开发必须 branch + PR。",
@@ -1381,6 +1586,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     previous = read_json(agents_dir / "goal-agent-summary.json", {})
 
     repos = {name: collect_repo(root, name) for name in DEFAULT_REPOS}
+    repo_state_risk = build_repo_state_risk(repos)
     pull_requests = collect_pull_requests(root, now)
     pull_request_queue = build_pull_request_queue(pull_requests)
     runtime = collect_runtime(root)
@@ -1442,7 +1648,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             "reason": reason,
         }
     agent_resource_risk = build_agent_resource_risk(agents, legacy_agents)
-    next_agent_actions = build_next_agent_actions(pull_request_queue, agent_resource_risk)
+    next_agent_actions = build_next_agent_actions(pull_request_queue, agent_resource_risk, repo_state_risk)
 
     summary = {
         "version": 2,
@@ -1454,6 +1660,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         "dry_run": bool(args.dry_run),
         "resampled_after_actions": True,
         "repos": repos,
+        "repo_state_risk": repo_state_risk,
         "pull_requests": pull_requests,
         "pull_request_queue": pull_request_queue,
         "runtime": runtime,
