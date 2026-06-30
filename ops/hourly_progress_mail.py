@@ -417,11 +417,14 @@ def agent_resource_risk_lines(summary: dict[str, object], *, limit: int = 6) -> 
     for item in visible_items[:limit]:
         token_usage = item.get("token_usage")
         token_text = f"{int(token_usage):,}" if isinstance(token_usage, int) else "未知"
+        reasons = item.get("reasons") if isinstance(item.get("reasons"), list) else []
+        reason_text = "、".join(str(reason) for reason in reasons[:3])
+        reason_suffix = f"；原因={reason_text}" if reason_text else ""
         lines.append(
             "- "
             f"{item.get('agent')}：{item.get('severity')}；"
             f"tokens={token_text}；"
-            f"log_bytes={item.get('log_bytes', 'unknown')}；"
+            f"log_bytes={item.get('log_bytes', 'unknown')}{reason_suffix}；"
             f"{item.get('action', '')}"
         )
     return lines
