@@ -448,23 +448,41 @@ def check_rollup_counts(item: dict[str, Any]) -> dict[str, int]:
     return counts
 
 
-def classify_pull_request_action(item: dict[str, Any], checks: dict[str, int]) -> tuple[int, str]:
+def pull_request_owner_agent(repo_name: str, head_ref: object) -> str:
+    head = str(head_ref or "")
+    if repo_name == "SpellKard":
+        return "client-agent"
+    if repo_name == "Gensoulkyo":
+        return "nakama-server-agent"
+    if repo_name == "PhK-BattleServer":
+        return "battle-server-agent"
+    if repo_name == "PhK-Protocol":
+        return "audit-agent"
+    if repo_name == "docs":
+        if "audit-agent" in head:
+            return "audit-agent"
+        if "project-manager-agent" in head:
+            return "project-manager-agent"
+    return "project-manager-agent"
+
+
+def classify_pull_request_action(item: dict[str, Any], checks: dict[str, int]) -> tuple[int, str, str]:
     if item.get("isDraft"):
-        return 70, "draft: wait until the owning agent marks it ready"
+        return 70, "draft", "draft: wait until the owning agent marks it ready"
     if checks.get("failed", 0) > 0:
-        return 15, "fix failing checks before merge review"
+        return 15, "fix_checks", "fix failing checks before merge review"
     merge_state = str(item.get("mergeStateStatus") or "UNKNOWN").upper()
     if merge_state == "DIRTY":
-        return 10, "resolve conflicts or supersede with the current persistent branch"
+        return 10, "resolve_conflicts", "resolve conflicts or supersede with the current persistent branch"
     if merge_state == "BEHIND":
-        return 20, "update branch against main, rerun checks, then review"
+        return 20, "update_branch", "update branch against main, rerun checks, then review"
     if merge_state in {"BLOCKED", "HAS_HOOKS"}:
-        return 30, "wait for required review/check gates or branch protection"
+        return 30, "blocked_gate", "wait for required review/check gates or branch protection"
     if checks.get("pending", 0) > 0:
-        return 40, "wait for pending checks"
+        return 40, "wait_checks", "wait for pending checks"
     if merge_state == "CLEAN":
-        return 60, "ready for review/merge"
-    return 50, f"inspect merge state {merge_state}"
+        return 60, "merge_ready", "ready for review/merge"
+    return 50, "inspect", f"inspect merge state {merge_state}"
 
 
 def build_pull_request_queue(pull_requests: dict[str, Any]) -> dict[str, Any]:
@@ -478,7 +496,8 @@ def build_pull_request_queue(pull_requests: dict[str, Any]) -> dict[str, Any]:
         for raw_item in repo.get("items", []):
             item = raw_item if isinstance(raw_item, dict) else {}
             checks = check_rollup_counts(item)
-            priority, action = classify_pull_request_action(item, checks)
+            priority, action_category, action = classify_pull_request_action(item, checks)
+            owner_agent = pull_request_owner_agent(repo_name, item.get("headRefName"))
             items.append(
                 {
                     "repo": repo_name,
@@ -492,23 +511,33 @@ def build_pull_request_queue(pull_requests: dict[str, Any]) -> dict[str, Any]:
                     "updated_at": item.get("updatedAt"),
                     "checks": checks,
                     "priority": priority,
+                    "owner_agent": owner_agent,
+                    "action_category": action_category,
                     "action": action,
                 }
             )
     items.sort(key=lambda entry: (int(entry.get("priority", 99)), str(entry.get("repo", "")), int(entry.get("number") or 0)))
     by_repo: dict[str, int] = {}
     by_state: dict[str, int] = {}
+    by_owner: dict[str, int] = {}
+    by_category: dict[str, int] = {}
     for item in items:
         repo = str(item.get("repo") or "unknown")
         state = str(item.get("merge_state") or "UNKNOWN")
+        owner = str(item.get("owner_agent") or "unknown")
+        category = str(item.get("action_category") or "unknown")
         by_repo[repo] = by_repo.get(repo, 0) + 1
         by_state[state] = by_state.get(state, 0) + 1
+        by_owner[owner] = by_owner.get(owner, 0) + 1
+        by_category[category] = by_category.get(category, 0) + 1
     return {
         "open_count": len(items),
         "failed_repos": failed_repos,
         "by_repo": by_repo,
         "by_merge_state": by_state,
-        "ready_count": sum(1 for item in items if item.get("action") == "ready for review/merge"),
+        "by_owner_agent": by_owner,
+        "by_action_category": by_category,
+        "ready_count": sum(1 for item in items if item.get("action_category") == "merge_ready"),
         "needs_action_count": sum(1 for item in items if int(item.get("priority", 99)) < 60),
         "items": items,
         "top_items": items[:12],
@@ -931,7 +960,9 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             f"needs_action={pull_request_queue.get('needs_action_count', 'unknown')}；"
             f"ready={pull_request_queue.get('ready_count', 'unknown')}；"
             f"by_repo={pull_request_queue.get('by_repo', {})}；"
-            f"by_state={pull_request_queue.get('by_merge_state', {})}。"
+            f"by_state={pull_request_queue.get('by_merge_state', {})}；"
+            f"by_owner={pull_request_queue.get('by_owner_agent', {})}；"
+            f"by_action={pull_request_queue.get('by_action_category', {})}。"
         )
     ]
     for item in pull_request_queue.get("top_items", [])[:8]:
@@ -939,9 +970,9 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
             pr_queue_lines.append(
                 "- "
-                f"{item.get('repo')} #{item.get('number')} {item.get('merge_state')} "
+                f"{item.get('owner_agent')} -> {item.get('repo')} #{item.get('number')} {item.get('merge_state')} "
                 f"checks={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)} "
-                f"action={item.get('action')} {item.get('url')}"
+                f"action={item.get('action_category')}:{item.get('action')} {item.get('url')}"
             )
 
     agent_lines = []

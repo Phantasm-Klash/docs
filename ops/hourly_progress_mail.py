@@ -224,7 +224,9 @@ def pull_request_queue_lines(summary: dict[str, object], *, limit: int = 8) -> l
             f"needs_action={queue.get('needs_action_count', 0)}；"
             f"ready={queue.get('ready_count', 0)}；"
             f"by_repo={queue.get('by_repo', {})}；"
-            f"by_state={queue.get('by_merge_state', {})}"
+            f"by_state={queue.get('by_merge_state', {})}；"
+            f"by_owner={queue.get('by_owner_agent', {})}；"
+            f"by_action={queue.get('by_action_category', {})}"
         )
     ]
     if failed_repos:
@@ -238,9 +240,9 @@ def pull_request_queue_lines(summary: dict[str, object], *, limit: int = 8) -> l
         checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
         lines.append(
             "- "
-            f"{item.get('repo')} #{item.get('number')}：{item.get('merge_state')}；"
+            f"{item.get('owner_agent', 'unknown')} -> {item.get('repo')} #{item.get('number')}：{item.get('merge_state')}；"
             f"checks ok/fail/pending={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)}；"
-            f"{item.get('action')}；{item.get('url')}"
+            f"{item.get('action_category', 'inspect')}:{item.get('action')}；{item.get('url')}"
         )
     return lines
 
