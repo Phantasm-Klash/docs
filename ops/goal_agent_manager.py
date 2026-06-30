@@ -25,7 +25,7 @@ from typing import Any
 DEFAULT_REPOS = ("docs", "SpellKard", "Gensoulkyo", "PhK-BattleServer", "PhK-Protocol")
 DEFAULT_KEY_FILE = "/root/.codex/keys"
 DEFAULT_GODOT_LINUX = "/root/gotouhou/Godot_v4.7-stable_linux.x86_64"
-DEFAULT_PROXY = "socks5h://10.10.10.108:10808"
+DEFAULT_PROXY = "socks5://10.10.10.108:10808"
 GITHUB_ORG = "Phantasm-Klash"
 REPORT_INTERVAL_HOURS = 3
 PROJECT_COMPLETION_PERCENT = 38
