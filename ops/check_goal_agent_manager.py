@@ -327,6 +327,14 @@ def check_read_only_samples_do_not_persist_authoritative_state() -> None:
         root = Path(tmp)
         key_file = root / "keys"
         key_file.write_text("other: dummy-local-test-key\n", encoding="utf-8")
+        reports_dir = root / ".agents" / "reports"
+        reports_dir.mkdir(parents=True)
+        old_report_time = dt.datetime(2026, 6, 30, 12, 0, tzinfo=goal_agent_manager.UTC)
+        old_report_epoch = old_report_time.timestamp()
+        for name in ("audit-agent-latest.md", "plan-audit-latest.md"):
+            report = reports_dir / name
+            report.write_text("old report\n", encoding="utf-8")
+            os.utime(report, (old_report_epoch, old_report_epoch))
 
         original_collect_repo = goal_agent_manager.collect_repo
         original_collect_pull_requests = goal_agent_manager.collect_pull_requests
@@ -381,8 +389,12 @@ def check_read_only_samples_do_not_persist_authoritative_state() -> None:
                 assert summary["started_count"] == 0
                 assert not (root / ".agents" / "goal-agent-summary.json").exists()
                 assert not (root / ".agents" / "last-watchdog-summary.json").exists()
-                assert not (root / ".agents" / "reports" / "audit-agent-latest.md").exists()
-                assert not (root / ".agents" / "reports" / "plan-audit-latest.md").exists()
+                assert (root / ".agents" / "reports" / "audit-agent-latest.md").read_text(encoding="utf-8") == "old report\n"
+                assert (root / ".agents" / "reports" / "plan-audit-latest.md").read_text(encoding="utf-8") == "old report\n"
+                assert summary["reports"]["audit_report"]["updated_at"] == goal_agent_manager.iso(old_report_time)
+                assert summary["reports"]["plan_audit"]["updated_at"] == goal_agent_manager.iso(old_report_time)
+                assert "text" not in summary["reports"]["audit_report"]
+                assert "text" not in summary["reports"]["plan_audit"]
         finally:
             goal_agent_manager.collect_repo = original_collect_repo
             goal_agent_manager.collect_pull_requests = original_collect_pull_requests
