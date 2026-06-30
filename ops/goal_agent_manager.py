@@ -36,6 +36,9 @@ LOG_BYTES_MEDIUM_RISK = 1_000_000
 LOG_BYTES_HIGH_RISK = 3_000_000
 LOG_SAMPLE_BYTES = 64_000
 LOG_TAIL_CHARS = 800
+PROMPT_MAX_NEXT_ACTION_LINES = 6
+PROMPT_MAX_RESOURCE_ACTION_LINES = 2
+PROMPT_MAX_TEXT_CHARS = 180
 
 
 AGENTS: dict[str, dict[str, Any]] = {
@@ -308,6 +311,13 @@ Key alias：`{key_alias or "(missing)"}`
 """
 
 
+def prompt_clip(value: object, max_chars: int = PROMPT_MAX_TEXT_CHARS) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
 def previous_next_action_prompt(agent_id: str, previous: dict[str, Any]) -> str:
     next_actions = previous.get("next_agent_actions") if isinstance(previous.get("next_agent_actions"), dict) else {}
     items = next_actions.get("items") if isinstance(next_actions.get("items"), list) else []
@@ -319,31 +329,35 @@ def previous_next_action_prompt(agent_id: str, previous: dict[str, Any]) -> str:
         matching_items.append(item)
 
     lines: list[str] = []
-    resource_items = [item for item in matching_items if item.get("category") == "resource_risk"]
+    resource_items = [
+        item
+        for item in matching_items
+        if item.get("category") == "resource_risk" and " low resource risk" not in str(item.get("summary") or "")
+    ]
     work_items = [item for item in matching_items if item.get("category") != "resource_risk"]
 
-    for item in resource_items[:2]:
+    for item in resource_items[:PROMPT_MAX_RESOURCE_ACTION_LINES]:
         evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
         reasons = evidence.get("reasons") if isinstance(evidence.get("reasons"), list) else []
-        reason_text = ",".join(str(reason) for reason in reasons[:3])
+        reason_text = prompt_clip(",".join(str(reason) for reason in reasons[:3]), 96)
         reason_suffix = f" reasons={reason_text}" if reason_text else ""
         lines.append(
             "- "
-            f"resource_limit priority={item.get('priority')} severity={str(item.get('summary') or '').replace(agent_id + ' ', '')} "
-            f"repo={item.get('repo')} action={item.get('action')}{reason_suffix}"
+            f"resource_limit priority={item.get('priority')} severity={prompt_clip(str(item.get('summary') or '').replace(agent_id + ' ', ''), 80)} "
+            f"repo={prompt_clip(item.get('repo'), 64)} action={prompt_clip(item.get('action'))}{reason_suffix}"
         )
 
     for item in work_items:
         evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
         url = evidence.get("url")
-        url_text = f" {url}" if url else ""
+        url_text = f" {prompt_clip(url, 140)}" if url else ""
         lines.append(
             "- "
             f"priority={item.get('priority')} category={item.get('category')} "
-            f"repo={item.get('repo')} action={item.get('action')} "
-            f"summary={item.get('summary')}{url_text}"
+            f"repo={prompt_clip(item.get('repo'), 64)} action={prompt_clip(item.get('action'))} "
+            f"summary={prompt_clip(item.get('summary'))}{url_text}"
         )
-        if len(lines) >= 8:
+        if len(lines) >= PROMPT_MAX_NEXT_ACTION_LINES:
             break
     if not lines:
         return "- 当前没有 manager 写入的结构化下一步行动项；按 docs/dev 和当前仓库状态选择最小切片。"
@@ -1372,13 +1386,16 @@ def build_next_agent_actions(
         agent = str(item.get("agent") or "")
         if not agent or agent == "legacy-agent-roster":
             continue
+        severity = str(item.get("severity") or "low")
+        if severity == "low":
+            continue
         items.append(
             {
                 "agent": agent,
                 "repo": str(item.get("repo") or "unknown"),
-                "priority": 80 if item.get("severity") == "high" else 90,
+                "priority": 80 if severity == "high" else 90,
                 "category": "resource_risk",
-                "summary": f"{agent} {item.get('severity')} resource risk",
+                "summary": f"{agent} {severity} resource risk",
                 "action": str(item.get("action") or "keep the next iteration small"),
                 "evidence": {
                     "token_usage": item.get("token_usage"),
