@@ -215,6 +215,18 @@ def check_repo_state_actions_stop_legacy_dirty_expansion() -> None:
     assert "不要把 Gensoulkyo root checkout 的 legacy 分支" in prompt
     assert "owning managed agent branch" in prompt
 
+    agents = {
+        "client-agent": {"repo": "SpellKard", "status": "running", "progress": True, "key_available": True},
+        "battle-server-agent": {"repo": "PhK-BattleServer", "status": "running", "progress": True, "key_available": True},
+        "nakama-server-agent": {"repo": "Gensoulkyo", "status": "running", "progress": True, "key_available": True},
+        "audit-agent": {"repo": "docs", "status": "running", "progress": True, "key_available": True},
+        "project-manager-agent": {"repo": "docs", "status": "running", "progress": True, "key_available": True},
+    }
+    health = goal_agent_manager.build_agent_health(agents, {"items": repo_state_risk["top_items"]}, {"items": []}, {"items": []}, actions)
+    health_actions = "\n".join(health["agents"]["nakama-server-agent"]["actions"])
+    assert "先止血版本状态" in health_actions
+    assert "不要把 Gensoulkyo root checkout" in health_actions
+
 
 def check_mail_summary_falls_back_when_primary_is_invalid() -> None:
     with tempfile.TemporaryDirectory() as raw_tmp:

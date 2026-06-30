@@ -1658,7 +1658,7 @@ def build_agent_health(
             else:
                 repo_penalty += 4
             reasons.append(f"仓库风险：{item.get('category')} {item.get('repo')}")
-            actions.append(str(item.get("action") or "整理仓库状态"))
+            actions.append(repo_state_prompt_action(item))
         score -= min(repo_penalty, 20)
 
         pr_penalty = 0
