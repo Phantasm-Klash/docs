@@ -58,6 +58,11 @@ PRs need review, conflict resolution, tests, or branch-protection handling. PR
 approval/merge should happen only after reading the diff, checking docs/dev
 direction, and running the relevant gates.
 
+The goal manager also writes a structured `pull_request_queue` section into
+`.agents/goal-agent-summary.json`. The brief progress mail prints its open,
+needs-action, ready, per-repository, and per-merge-state counts plus the top PRs
+that need conflict resolution, branch updates, pending checks, review, or merge.
+
 SpellKard workers should use the Linux Godot binary at
 `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` for headless checks. Server
 workers should prefer Docker regression through `docker-compose`; if a server
