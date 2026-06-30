@@ -60,10 +60,15 @@ direction, and running the relevant gates.
 
 The goal manager also writes a structured `pull_request_queue` section into
 `.agents/goal-agent-summary.json`. The brief progress mail prints its open,
-needs-action, ready, per-repository, per-owner-agent, per-action-category, and
-per-merge-state counts plus the top PRs that need conflict resolution, branch
-updates, pending checks, review, or merge. The owner field is a routing hint for
-the next agent turn; it does not replace diff review or branch-protection gates.
+needs-action, ready, per-repository, per-owner-agent, per-action-category,
+per-merge-state, stale supersede-group counts, and explicit merge-ready PRs
+plus the top PRs that need conflict resolution, branch updates, pending checks,
+review, or merge. A
+supersede group means one repository and owner agent have multiple DIRTY/BEHIND
+PRs that should be consolidated into a fresh current-base PR or explicitly
+closed as superseded before new work expands. The owner field is a routing hint
+for the next agent turn; it does not replace diff review or branch-protection
+gates.
 
 SpellKard workers should use the Linux Godot binary at
 `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` for headless checks. Server
