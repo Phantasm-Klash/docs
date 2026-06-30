@@ -21,7 +21,8 @@ from pathlib import Path
 
 
 DEFAULT_REPOS = ("docs", "SpellKard", "Gensoulkyo", "PhK-BattleServer", "PhK-Protocol")
-DEFAULT_WATCHDOG_SUMMARY = "/root/gotouhou/.agents/last-watchdog-summary.json"
+DEFAULT_GOAL_AGENT_SUMMARY = "/root/gotouhou/.agents/goal-agent-summary.json"
+LEGACY_WATCHDOG_SUMMARY = "/root/gotouhou/.agents/last-watchdog-summary.json"
 DEFAULT_AUDIT_REPORT = "/root/gotouhou/.agents/reports/audit-agent-latest.md"
 REPORT_INTERVAL_HOURS = 3
 PROJECT_COMPLETION_PERCENT = 38
@@ -339,20 +340,33 @@ def agent_resource_risk_lines(summary: dict[str, object], *, limit: int = 6) -> 
     risk = summary.get("agent_resource_risk") if isinstance(summary.get("agent_resource_risk"), dict) else {}
     if not risk:
         return ["- 未读取到结构化 agent 资源风险；详见 agent 状态行。"]
+    all_items = risk.get("items") if isinstance(risk.get("items"), list) else []
+    low_count = sum(
+        1
+        for raw_item in all_items
+        if isinstance(raw_item, dict) and str(raw_item.get("severity") or "") == "low"
+    )
     lines = [
         (
             "- "
             f"high={risk.get('high_count', 0)}；"
             f"medium={risk.get('medium_count', 0)}；"
+            f"legacy={risk.get('legacy_count', 0)}；"
+            f"low={low_count}；"
             f"thresholds={risk.get('thresholds', {})}"
         )
     ]
     items = risk.get("top_items") if isinstance(risk.get("top_items"), list) else []
-    if not items:
-        lines.append("- 当前没有可展示的资源风险项。")
+    visible_items = [
+        item
+        for raw_item in items
+        for item in (raw_item if isinstance(raw_item, dict) else {},)
+        if str(item.get("severity") or "") in {"high", "medium"}
+    ]
+    if not visible_items:
+        lines.append("- 当前没有中高资源风险项；低风险只保留在结构化 summary 中。")
         return lines
-    for raw_item in items[:limit]:
-        item = raw_item if isinstance(raw_item, dict) else {}
+    for item in visible_items[:limit]:
         token_usage = item.get("token_usage")
         token_text = f"{int(token_usage):,}" if isinstance(token_usage, int) else "未知"
         lines.append(
@@ -676,14 +690,24 @@ def build_body(root: Path, repos: tuple[str, ...]) -> str:
     )
 
 
+def resolve_summary_path(path: Path) -> Path:
+    if path.exists():
+        return path
+    fallback = Path(LEGACY_WATCHDOG_SUMMARY)
+    if fallback.exists():
+        return fallback
+    return path
+
+
 def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: Path) -> str:
     now = format_time_cn(None)
-    watchdog = read_json(watchdog_summary_path)
+    summary_path = resolve_summary_path(watchdog_summary_path)
+    watchdog = read_json(summary_path)
     lines = [
         f"gotouhou {REPORT_INTERVAL_HOURS}小时开发简报",
         f"Generated: {now}",
         f"Workspace: {root}",
-        f"Agent summary: {watchdog_summary_path}",
+        f"Agent summary: {summary_path}",
         "",
         "项目进度:",
         *minimal_watchdog_lines(watchdog),
@@ -770,8 +794,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--full", action="store_false", dest="brief", help="send the legacy detailed git report")
     parser.add_argument(
         "--watchdog-summary",
-        default=os.getenv("GOTOUHOU_WATCHDOG_SUMMARY", DEFAULT_WATCHDOG_SUMMARY),
-        help="path to the watchdog JSON summary",
+        default=os.getenv("GOTOUHOU_WATCHDOG_SUMMARY", DEFAULT_GOAL_AGENT_SUMMARY),
+        help="path to the goal-agent JSON summary; falls back to the legacy watchdog summary if missing",
     )
     parser.add_argument("--dry-run", action="store_true", help="print the email body instead of sending")
     parser.add_argument("--smtp-host", default=os.getenv("GOTOUHOU_SMTP_HOST", "smtp.ym.163.com"))

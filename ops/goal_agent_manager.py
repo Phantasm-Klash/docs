@@ -34,6 +34,11 @@ TOKEN_MEDIUM_RISK = 200_000
 TOKEN_HIGH_RISK = 500_000
 LOG_BYTES_MEDIUM_RISK = 1_000_000
 LOG_BYTES_HIGH_RISK = 3_000_000
+LOG_SAMPLE_BYTES = 64_000
+LOG_TAIL_CHARS = 800
+PROMPT_MAX_NEXT_ACTION_LINES = 6
+PROMPT_MAX_RESOURCE_ACTION_LINES = 2
+PROMPT_MAX_TEXT_CHARS = 180
 
 
 AGENTS: dict[str, dict[str, Any]] = {
@@ -122,7 +127,8 @@ AGENTS: dict[str, dict[str, Any]] = {
             "docs/ops",
         ),
         "checks": (
-            "python3 -m py_compile docs/ops/goal_agent_manager.py docs/ops/hourly_progress_mail.py",
+            "python3 -m py_compile docs/ops/goal_agent_manager.py docs/ops/hourly_progress_mail.py docs/ops/check_goal_agent_manager.py",
+            "python3 docs/ops/check_goal_agent_manager.py",
             "python3 docs/ops/goal_agent_manager.py --dry-run --root /root/gotouhou",
         ),
         "mission": (
@@ -143,7 +149,8 @@ AGENTS: dict[str, dict[str, Any]] = {
             "docs/ops/goal_agent_manager.py",
         ),
         "checks": (
-            "python3 -m py_compile docs/ops/goal_agent_manager.py docs/ops/hourly_progress_mail.py",
+            "python3 -m py_compile docs/ops/goal_agent_manager.py docs/ops/hourly_progress_mail.py docs/ops/check_goal_agent_manager.py",
+            "python3 docs/ops/check_goal_agent_manager.py",
             "python3 docs/ops/goal_agent_manager.py --dry-run --root /root/gotouhou --no-start",
             "python3 docs/ops/hourly_progress_mail.py --dry-run --brief",
         ),
@@ -306,6 +313,13 @@ Key alias：`{key_alias or "(missing)"}`
 """
 
 
+def prompt_clip(value: object, max_chars: int = PROMPT_MAX_TEXT_CHARS) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
 def previous_next_action_prompt(agent_id: str, previous: dict[str, Any]) -> str:
     next_actions = previous.get("next_agent_actions") if isinstance(previous.get("next_agent_actions"), dict) else {}
     items = next_actions.get("items") if isinstance(next_actions.get("items"), list) else []
@@ -317,31 +331,35 @@ def previous_next_action_prompt(agent_id: str, previous: dict[str, Any]) -> str:
         matching_items.append(item)
 
     lines: list[str] = []
-    resource_items = [item for item in matching_items if item.get("category") == "resource_risk"]
+    resource_items = [
+        item
+        for item in matching_items
+        if item.get("category") == "resource_risk" and " low resource risk" not in str(item.get("summary") or "")
+    ]
     work_items = [item for item in matching_items if item.get("category") != "resource_risk"]
 
-    for item in resource_items[:2]:
+    for item in resource_items[:PROMPT_MAX_RESOURCE_ACTION_LINES]:
         evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
         reasons = evidence.get("reasons") if isinstance(evidence.get("reasons"), list) else []
-        reason_text = ",".join(str(reason) for reason in reasons[:3])
+        reason_text = prompt_clip(",".join(str(reason) for reason in reasons[:3]), 96)
         reason_suffix = f" reasons={reason_text}" if reason_text else ""
         lines.append(
             "- "
-            f"resource_limit priority={item.get('priority')} severity={str(item.get('summary') or '').replace(agent_id + ' ', '')} "
-            f"repo={item.get('repo')} action={item.get('action')}{reason_suffix}"
+            f"resource_limit priority={item.get('priority')} severity={prompt_clip(str(item.get('summary') or '').replace(agent_id + ' ', ''), 80)} "
+            f"repo={prompt_clip(item.get('repo'), 64)} action={prompt_clip(item.get('action'))}{reason_suffix}"
         )
 
     for item in work_items:
         evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
         url = evidence.get("url")
-        url_text = f" {url}" if url else ""
+        url_text = f" {prompt_clip(url, 140)}" if url else ""
         lines.append(
             "- "
             f"priority={item.get('priority')} category={item.get('category')} "
-            f"repo={item.get('repo')} action={item.get('action')} "
-            f"summary={item.get('summary')}{url_text}"
+            f"repo={prompt_clip(item.get('repo'), 64)} action={prompt_clip(item.get('action'))} "
+            f"summary={prompt_clip(item.get('summary'))}{url_text}"
         )
-        if len(lines) >= 8:
+        if len(lines) >= PROMPT_MAX_NEXT_ACTION_LINES:
             break
     if not lines:
         return "- 当前没有 manager 写入的结构化下一步行动项；按 docs/dev 和当前仓库状态选择最小切片。"
@@ -387,10 +405,21 @@ def latest_log(root: Path, agent_id: str) -> Path | None:
     return logs[-1] if logs else None
 
 
+def read_log_sample(path: Path, max_bytes: int = LOG_SAMPLE_BYTES) -> tuple[str, int, bool]:
+    stat = path.stat()
+    sample_bytes = min(stat.st_size, max_bytes)
+    with path.open("rb") as handle:
+        if stat.st_size > sample_bytes:
+            handle.seek(-sample_bytes, os.SEEK_END)
+        data = handle.read(sample_bytes)
+    return data.decode("utf-8", errors="replace"), sample_bytes, stat.st_size > sample_bytes
+
+
 def log_info(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
         return {"exists": False}
-    text = path.read_text(encoding="utf-8", errors="replace")
+    stat = path.stat()
+    text, sampled_bytes, tail_truncated = read_log_sample(path)
     exit_status = None
     for match in re.finditer(r"\[goal-manager\] exited status=(\d+)", text):
         exit_status = int(match.group(1))
@@ -401,13 +430,16 @@ def log_info(path: Path | None) -> dict[str, Any]:
     return {
         "exists": True,
         "path": str(path),
-        "updated_at": iso(dt.datetime.fromtimestamp(path.stat().st_mtime, UTC)),
-        "bytes": path.stat().st_size,
-        "line_count": text.count("\n") + (1 if text else 0),
+        "updated_at": iso(dt.datetime.fromtimestamp(stat.st_mtime, UTC)),
+        "bytes": stat.st_size,
+        "sampled_bytes": sampled_bytes,
+        "tail_truncated": tail_truncated,
+        "line_count": text.count("\n") + (1 if text else 0) if not tail_truncated else None,
+        "sampled_line_count": text.count("\n") + (1 if text else 0),
         "exited": exit_status is not None,
         "exit_status": exit_status,
         "token_usage": token_usage,
-        "tail": text[-1200:],
+        "tail": text[-LOG_TAIL_CHARS:],
     }
 
 
@@ -1254,6 +1286,8 @@ def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) ->
 
     severity_order = {"high": 0, "medium": 1, "low": 2}
     items.sort(key=lambda item: (severity_order.get(str(item.get("severity")), 9), str(item.get("agent", ""))))
+    legacy_items = [item for item in items if item.get("agent") == "legacy-agent-roster"]
+    managed_items = [item for item in items if item.get("agent") != "legacy-agent-roster"]
     return {
         "thresholds": {
             "token_medium": TOKEN_MEDIUM_RISK,
@@ -1261,10 +1295,12 @@ def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) ->
             "log_bytes_medium": LOG_BYTES_MEDIUM_RISK,
             "log_bytes_high": LOG_BYTES_HIGH_RISK,
         },
-        "high_count": sum(1 for item in items if item.get("severity") == "high"),
-        "medium_count": sum(1 for item in items if item.get("severity") == "medium"),
+        "high_count": sum(1 for item in managed_items if item.get("severity") == "high"),
+        "medium_count": sum(1 for item in managed_items if item.get("severity") == "medium"),
+        "legacy_count": len(legacy_items),
+        "legacy_items": legacy_items,
         "items": items,
-        "top_items": items[:8],
+        "top_items": managed_items[:8],
     }
 
 
@@ -1356,13 +1392,16 @@ def build_next_agent_actions(
         agent = str(item.get("agent") or "")
         if not agent or agent == "legacy-agent-roster":
             continue
+        severity = str(item.get("severity") or "low")
+        if severity == "low":
+            continue
         items.append(
             {
                 "agent": agent,
                 "repo": str(item.get("repo") or "unknown"),
-                "priority": 80 if item.get("severity") == "high" else 90,
+                "priority": 80 if severity == "high" else 90,
                 "category": "resource_risk",
-                "summary": f"{agent} {item.get('severity')} resource risk",
+                "summary": f"{agent} {severity} resource risk",
                 "action": str(item.get("action") or "keep the next iteration small"),
                 "evidence": {
                     "token_usage": item.get("token_usage"),
@@ -1771,6 +1810,62 @@ def write_manager_status(root: Path, summary: dict[str, Any]) -> None:
     )
 
 
+def compact_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    agents = summary.get("agents") if isinstance(summary.get("agents"), dict) else {}
+    return {
+        "version": summary.get("version"),
+        "manager": summary.get("manager"),
+        "generated_at": summary.get("generated_at"),
+        "root": summary.get("root"),
+        "dry_run": summary.get("dry_run"),
+        "action_count": summary.get("action_count"),
+        "started_count": summary.get("started_count"),
+        "agents": {
+            agent_id: {
+                "repo": agent.get("repo"),
+                "status": agent.get("status"),
+                "key_alias": agent.get("key_alias"),
+                "workdir": agent.get("workdir"),
+                "log": {
+                    "path": runtime_log.get("path"),
+                    "bytes": runtime_log.get("bytes"),
+                    "sampled_bytes": runtime_log.get("sampled_bytes"),
+                    "tail_truncated": runtime_log.get("tail_truncated"),
+                    "token_usage": runtime_log.get("token_usage"),
+                    "exit_status": runtime_log.get("exit_status"),
+                },
+            }
+            for agent_id, raw_agent in sorted(agents.items())
+            if isinstance(raw_agent, dict)
+            for agent in (raw_agent,)
+            for runtime_log in (agent.get("runtime_log") if isinstance(agent.get("runtime_log"), dict) else {},)
+        },
+        "repo_state_risk": summary.get("repo_state_risk"),
+        "pull_request_queue": {
+            key: value
+            for key, value in (summary.get("pull_request_queue") if isinstance(summary.get("pull_request_queue"), dict) else {}).items()
+            if key not in {"items"}
+        },
+        "agent_resource_risk": summary.get("agent_resource_risk"),
+        "next_agent_actions": summary.get("next_agent_actions"),
+        "regression": {
+            key: regression.get(key)
+            for key in ("ok", "failed_count", "ignored_count", "generated_at")
+            for regression in (summary.get("regression") if isinstance(summary.get("regression"), dict) else {},)
+        },
+        "reports": {
+            key: {
+                "path": report.get("path"),
+                "updated_at": report.get("updated_at"),
+            }
+            for key, raw_report in (summary.get("reports") if isinstance(summary.get("reports"), dict) else {}).items()
+            if isinstance(raw_report, dict)
+            for report in (raw_report,)
+        },
+        "failures": summary.get("failures"),
+    }
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default="/root/gotouhou")
@@ -1778,13 +1873,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-start", action="store_true", help="write state/personas without launching codex workers")
     parser.add_argument("--force-start", action="store_true", help="start agents even if they completed recently")
+    parser.add_argument("--full-output", action="store_true", help="print the complete JSON summary instead of the compact operational view")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     summary = build_summary(args)
-    print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    output = summary if args.full_output else compact_summary(summary)
+    print(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 
 
