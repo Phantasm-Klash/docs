@@ -422,6 +422,35 @@ def previous_health_prompt(agent_id: str, previous: dict[str, Any]) -> str:
     )
 
 
+def repo_state_prompt_action(item: dict[str, Any]) -> str:
+    category = str(item.get("category") or "")
+    repo = prompt_clip(item.get("repo"), 64)
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    branch = prompt_clip(evidence.get("branch"), 96)
+    dirty_count = evidence.get("dirty_count")
+    if category == "dirty_worktree":
+        dirty_suffix = f"dirty={dirty_count}；" if dirty_count is not None else ""
+        return (
+            f"先止血版本状态：检查 {repo} {branch} 的 {dirty_suffix}"
+            "只做保留价值判断，提交/推 PR 或写明 supersede/废弃原因；完成前不要扩展新业务切片"
+        )
+    if category == "legacy_branch_checkout":
+        return (
+            f"不要把 {repo} root checkout 的 legacy 分支 {branch} 当基线；"
+            "如有价值先迁移到 owning managed agent branch，否则只记录清退说明"
+        )
+    if category == "local_ahead":
+        ahead = evidence.get("ahead")
+        return (
+            f"先处理 {repo} {branch} 本地 ahead={ahead}：推送并开/更新 PR，"
+            "或记录无法推送原因；不要继续叠加本地提交"
+        )
+    if category == "local_behind":
+        behind = evidence.get("behind")
+        return f"先同步 {repo} {branch} behind={behind} 到最新 upstream，再选择新切片"
+    return str(item.get("action") or "inspect repository state")
+
+
 def agent_prompt(agent_id: str, agent: dict[str, Any], persona_path: Path, workdir: Path, key_assignment: dict[str, Any], previous: dict[str, Any]) -> str:
     return f"""你现在是 `{agent_id}`，必须按 Codex `/goal` 持续目标模式工作。
 
@@ -1414,7 +1443,7 @@ def build_next_agent_actions(
                 "priority": int(item.get("priority", 40) or 40),
                 "category": str(item.get("category") or "repo_state"),
                 "summary": str(item.get("summary") or ""),
-                "action": str(item.get("action") or "inspect repository state"),
+                "action": repo_state_prompt_action(item),
                 "evidence": item.get("evidence") if isinstance(item.get("evidence"), dict) else {},
             }
         )

@@ -180,6 +180,42 @@ def check_dirty_repo_owner_prefers_active_workdir_agent() -> None:
     assert summary["by_owner_agent"] == {"audit-agent": 1}
 
 
+def check_repo_state_actions_stop_legacy_dirty_expansion() -> None:
+    repo_state_risk = {
+        "top_items": [
+            {
+                "owner_agent": "nakama-server-agent",
+                "repo": "Gensoulkyo",
+                "priority": 8,
+                "category": "dirty_worktree",
+                "summary": "Gensoulkyo has 4 uncommitted item(s) on agent/gensoulkyo-lobby/20260629-0900",
+                "action": "inspect the dirty work",
+                "evidence": {
+                    "branch": "agent/gensoulkyo-lobby/20260629-0900",
+                    "dirty_count": 4,
+                },
+            },
+            {
+                "owner_agent": "nakama-server-agent",
+                "repo": "Gensoulkyo",
+                "priority": 65,
+                "category": "legacy_branch_checkout",
+                "summary": "Gensoulkyo root checkout is on legacy/non-managed branch agent/gensoulkyo-lobby/20260629-0900",
+                "action": "avoid using this root checkout as the canonical baseline",
+                "evidence": {"branch": "agent/gensoulkyo-lobby/20260629-0900"},
+            },
+        ]
+    }
+
+    actions = goal_agent_manager.build_next_agent_actions({"top_items": [], "merge_ready_items": []}, {"top_items": []}, repo_state_risk)
+    prompt = goal_agent_manager.previous_next_action_prompt("nakama-server-agent", {"next_agent_actions": actions})
+
+    assert "先止血版本状态" in prompt
+    assert "完成前不要扩展新业务切片" in prompt
+    assert "不要把 Gensoulkyo root checkout 的 legacy 分支" in prompt
+    assert "owning managed agent branch" in prompt
+
+
 def check_mail_summary_falls_back_when_primary_is_invalid() -> None:
     with tempfile.TemporaryDirectory() as raw_tmp:
         tmp = Path(raw_tmp)
@@ -278,6 +314,7 @@ def main() -> int:
     check_agent_health_promotes_version_and_resource_risk()
     check_pending_pr_checks_are_not_reported_as_branch_gate()
     check_dirty_repo_owner_prefers_active_workdir_agent()
+    check_repo_state_actions_stop_legacy_dirty_expansion()
     check_mail_summary_falls_back_when_primary_is_invalid()
     check_running_agent_prefers_lock_log_path()
     check_runtime_log_keeps_tail_only_for_failures()
