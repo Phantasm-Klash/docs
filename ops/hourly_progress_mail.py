@@ -244,6 +244,14 @@ def pull_request_queue_lines(summary: dict[str, object], *, limit: int = 8) -> l
                 parts.append(f"{label}=[{rendered}]")
         return "；" + "；".join(parts) if parts else ""
 
+    def review_gate_detail(item: dict[str, object]) -> str:
+        gate = item.get("review_gate") if isinstance(item.get("review_gate"), dict) else {}
+        if not gate.get("required"):
+            return ""
+        category = str(gate.get("category") or "review")
+        reason = str(gate.get("reason") or "").strip()
+        return f"；review_gate={category}" + (f"：{reason}" if reason else "")
+
     groups = queue.get("supersede_groups") if isinstance(queue.get("supersede_groups"), list) else []
     for raw_group in groups[:4]:
         group = raw_group if isinstance(raw_group, dict) else {}
@@ -261,7 +269,7 @@ def pull_request_queue_lines(summary: dict[str, object], *, limit: int = 8) -> l
             "- "
             f"merge-ready {item.get('owner_agent', 'unknown')} -> {item.get('repo')} #{item.get('number')}："
             f"checks ok/fail/pending={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)}；"
-            f"{item.get('url')}{check_detail(checks)}"
+            f"{item.get('url')}{check_detail(checks)}{review_gate_detail(item)}"
         )
     items = queue.get("top_items") if isinstance(queue.get("top_items"), list) else []
     if not items:
@@ -278,7 +286,8 @@ def pull_request_queue_lines(summary: dict[str, object], *, limit: int = 8) -> l
             "- "
             f"{item.get('owner_agent', 'unknown')} -> {item.get('repo')} #{item.get('number')}：{item.get('merge_state')}；"
             f"checks ok/fail/pending={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)}；"
-            f"{item.get('action_category', 'inspect')}:{item.get('action')}；{item.get('url')}{check_detail(checks)}"
+            f"{item.get('action_category', 'inspect')}:{item.get('action')}；{item.get('url')}"
+            f"{check_detail(checks)}{review_gate_detail(item)}"
         )
     return lines
 

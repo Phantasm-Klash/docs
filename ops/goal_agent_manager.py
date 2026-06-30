@@ -472,6 +472,14 @@ def check_rollup_detail(checks: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def review_gate_detail(review_gate: dict[str, Any]) -> str:
+    if not review_gate.get("required"):
+        return ""
+    category = str(review_gate.get("category") or "review")
+    reason = str(review_gate.get("reason") or "").strip()
+    return f" review_gate={category}" + (f":{reason}" if reason else "")
+
+
 def pull_request_owner_agent(repo_name: str, head_ref: object) -> str:
     head = str(head_ref or "")
     if repo_name == "SpellKard":
@@ -488,6 +496,41 @@ def pull_request_owner_agent(repo_name: str, head_ref: object) -> str:
         if "project-manager-agent" in head:
             return "project-manager-agent"
     return "project-manager-agent"
+
+
+def merge_review_gate(repo_name: str, item: dict[str, Any]) -> dict[str, Any]:
+    """Describe merge-review gates that cannot be inferred from check state."""
+    title = str(item.get("title") or "").lower()
+    head = str(item.get("headRefName") or "").lower()
+    haystack = f"{repo_name.lower()} {title} {head}"
+    security_terms = (
+        "protocol",
+        "network",
+        "security",
+        "auth",
+        "ticket",
+        "settlement",
+        "callback",
+        "envelope",
+        "battle",
+        "boss",
+        "kcp",
+        "aead",
+        "crypto",
+    )
+    if repo_name in {"Gensoulkyo", "PhK-BattleServer", "PhK-Protocol"}:
+        return {
+            "required": True,
+            "category": "protocol_network_security",
+            "reason": "server/protocol repository changes need diff review and protocol-audit evidence before merge",
+        }
+    if any(term in haystack for term in security_terms):
+        return {
+            "required": True,
+            "category": "protocol_network_security",
+            "reason": "PR title or branch touches protocol/network/security-sensitive areas",
+        }
+    return {"required": False, "category": "standard", "reason": ""}
 
 
 def classify_pull_request_action(item: dict[str, Any], checks: dict[str, int]) -> tuple[int, str, str]:
@@ -569,6 +612,7 @@ def build_pull_request_queue(pull_requests: dict[str, Any]) -> dict[str, Any]:
             checks = check_rollup_counts(item)
             priority, action_category, action = classify_pull_request_action(item, checks)
             owner_agent = pull_request_owner_agent(repo_name, item.get("headRefName"))
+            review_gate = merge_review_gate(repo_name, item)
             items.append(
                 {
                     "repo": repo_name,
@@ -583,6 +627,7 @@ def build_pull_request_queue(pull_requests: dict[str, Any]) -> dict[str, Any]:
                     "checks": checks,
                     "priority": priority,
                     "owner_agent": owner_agent,
+                    "review_gate": review_gate,
                     "action_category": action_category,
                     "action": action,
                 }
@@ -1055,22 +1100,24 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
             check_detail = check_rollup_detail(checks)
             detail_text = f" {check_detail}" if check_detail else ""
+            gate_text = review_gate_detail(item.get("review_gate") if isinstance(item.get("review_gate"), dict) else {})
             pr_queue_lines.append(
                 "- "
                 f"merge-ready {item.get('owner_agent')} -> {item.get('repo')} #{item.get('number')} "
                 f"checks={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)}"
-                f"{detail_text} {item.get('url')}"
+                f"{detail_text}{gate_text} {item.get('url')}"
             )
     for item in pull_request_queue.get("top_items", [])[:8]:
         if isinstance(item, dict):
             checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
             check_detail = check_rollup_detail(checks)
             detail_text = f" {check_detail}" if check_detail else ""
+            gate_text = review_gate_detail(item.get("review_gate") if isinstance(item.get("review_gate"), dict) else {})
             pr_queue_lines.append(
                 "- "
                 f"{item.get('owner_agent')} -> {item.get('repo')} #{item.get('number')} {item.get('merge_state')} "
                 f"checks={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)}"
-                f"{detail_text} action={item.get('action_category')}:{item.get('action')} {item.get('url')}"
+                f"{detail_text}{gate_text} action={item.get('action_category')}:{item.get('action')} {item.get('url')}"
             )
 
     agent_lines = []
