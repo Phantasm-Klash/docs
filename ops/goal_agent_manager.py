@@ -1284,6 +1284,8 @@ def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) ->
 
     severity_order = {"high": 0, "medium": 1, "low": 2}
     items.sort(key=lambda item: (severity_order.get(str(item.get("severity")), 9), str(item.get("agent", ""))))
+    legacy_items = [item for item in items if item.get("agent") == "legacy-agent-roster"]
+    managed_items = [item for item in items if item.get("agent") != "legacy-agent-roster"]
     return {
         "thresholds": {
             "token_medium": TOKEN_MEDIUM_RISK,
@@ -1291,10 +1293,12 @@ def build_agent_resource_risk(agents: dict[str, Any], legacy: dict[str, Any]) ->
             "log_bytes_medium": LOG_BYTES_MEDIUM_RISK,
             "log_bytes_high": LOG_BYTES_HIGH_RISK,
         },
-        "high_count": sum(1 for item in items if item.get("severity") == "high"),
-        "medium_count": sum(1 for item in items if item.get("severity") == "medium"),
+        "high_count": sum(1 for item in managed_items if item.get("severity") == "high"),
+        "medium_count": sum(1 for item in managed_items if item.get("severity") == "medium"),
+        "legacy_count": len(legacy_items),
+        "legacy_items": legacy_items,
         "items": items,
-        "top_items": items[:8],
+        "top_items": managed_items[:8],
     }
 
 

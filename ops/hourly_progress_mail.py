@@ -21,7 +21,8 @@ from pathlib import Path
 
 
 DEFAULT_REPOS = ("docs", "SpellKard", "Gensoulkyo", "PhK-BattleServer", "PhK-Protocol")
-DEFAULT_WATCHDOG_SUMMARY = "/root/gotouhou/.agents/last-watchdog-summary.json"
+DEFAULT_GOAL_AGENT_SUMMARY = "/root/gotouhou/.agents/goal-agent-summary.json"
+LEGACY_WATCHDOG_SUMMARY = "/root/gotouhou/.agents/last-watchdog-summary.json"
 DEFAULT_AUDIT_REPORT = "/root/gotouhou/.agents/reports/audit-agent-latest.md"
 REPORT_INTERVAL_HOURS = 3
 PROJECT_COMPLETION_PERCENT = 38
@@ -350,6 +351,7 @@ def agent_resource_risk_lines(summary: dict[str, object], *, limit: int = 6) -> 
             "- "
             f"high={risk.get('high_count', 0)}；"
             f"medium={risk.get('medium_count', 0)}；"
+            f"legacy={risk.get('legacy_count', 0)}；"
             f"low={low_count}；"
             f"thresholds={risk.get('thresholds', {})}"
         )
@@ -688,14 +690,24 @@ def build_body(root: Path, repos: tuple[str, ...]) -> str:
     )
 
 
+def resolve_summary_path(path: Path) -> Path:
+    if path.exists():
+        return path
+    fallback = Path(LEGACY_WATCHDOG_SUMMARY)
+    if fallback.exists():
+        return fallback
+    return path
+
+
 def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: Path) -> str:
     now = format_time_cn(None)
-    watchdog = read_json(watchdog_summary_path)
+    summary_path = resolve_summary_path(watchdog_summary_path)
+    watchdog = read_json(summary_path)
     lines = [
         f"gotouhou {REPORT_INTERVAL_HOURS}小时开发简报",
         f"Generated: {now}",
         f"Workspace: {root}",
-        f"Agent summary: {watchdog_summary_path}",
+        f"Agent summary: {summary_path}",
         "",
         "项目进度:",
         *minimal_watchdog_lines(watchdog),
@@ -782,8 +794,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--full", action="store_false", dest="brief", help="send the legacy detailed git report")
     parser.add_argument(
         "--watchdog-summary",
-        default=os.getenv("GOTOUHOU_WATCHDOG_SUMMARY", DEFAULT_WATCHDOG_SUMMARY),
-        help="path to the watchdog JSON summary",
+        default=os.getenv("GOTOUHOU_WATCHDOG_SUMMARY", DEFAULT_GOAL_AGENT_SUMMARY),
+        help="path to the goal-agent JSON summary; falls back to the legacy watchdog summary if missing",
     )
     parser.add_argument("--dry-run", action="store_true", help="print the email body instead of sending")
     parser.add_argument("--smtp-host", default=os.getenv("GOTOUHOU_SMTP_HOST", "smtp.ym.163.com"))
