@@ -243,7 +243,11 @@ def pull_request_queue_lines(summary: dict[str, object], *, limit: int = 8) -> l
         )
     items = queue.get("top_items") if isinstance(queue.get("top_items"), list) else []
     if not items:
-        lines.append("- 当前没有 open PR。")
+        open_count = int(queue.get("open_count", 0) or 0)
+        if open_count:
+            lines.append("- 当前没有可展示的 top PR 明细；请查看结构化 PR 队列。")
+        else:
+            lines.append("- 当前没有 open PR。")
         return lines
     for raw_item in items[:limit]:
         item = raw_item if isinstance(raw_item, dict) else {}
