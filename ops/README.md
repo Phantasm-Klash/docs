@@ -77,7 +77,8 @@ log files. Reports should prefer structured fields such as `status`,
 `runtime_log.tail` only for short diagnostics. The manager's default CLI output
 is also compact; pass `--full-output` only when a local full JSON inspection is
 needed. Low resource-risk records stay in `agent_resource_risk` for trend
-tracking, but only medium/high resource risk is promoted into agent prompts.
+tracking, but only medium/high resource risk is promoted into agent prompts or
+listed individually in the brief progress mail.
 
 The same summary also includes `repo_state_risk`, which routes repository
 state that is not visible from PRs alone: dirty worktrees, local branches ahead

@@ -339,20 +339,32 @@ def agent_resource_risk_lines(summary: dict[str, object], *, limit: int = 6) -> 
     risk = summary.get("agent_resource_risk") if isinstance(summary.get("agent_resource_risk"), dict) else {}
     if not risk:
         return ["- 未读取到结构化 agent 资源风险；详见 agent 状态行。"]
+    all_items = risk.get("items") if isinstance(risk.get("items"), list) else []
+    low_count = sum(
+        1
+        for raw_item in all_items
+        if isinstance(raw_item, dict) and str(raw_item.get("severity") or "") == "low"
+    )
     lines = [
         (
             "- "
             f"high={risk.get('high_count', 0)}；"
             f"medium={risk.get('medium_count', 0)}；"
+            f"low={low_count}；"
             f"thresholds={risk.get('thresholds', {})}"
         )
     ]
     items = risk.get("top_items") if isinstance(risk.get("top_items"), list) else []
-    if not items:
-        lines.append("- 当前没有可展示的资源风险项。")
+    visible_items = [
+        item
+        for raw_item in items
+        for item in (raw_item if isinstance(raw_item, dict) else {},)
+        if str(item.get("severity") or "") in {"high", "medium"}
+    ]
+    if not visible_items:
+        lines.append("- 当前没有中高资源风险项；低风险只保留在结构化 summary 中。")
         return lines
-    for raw_item in items[:limit]:
-        item = raw_item if isinstance(raw_item, dict) else {}
+    for item in visible_items[:limit]:
         token_usage = item.get("token_usage")
         token_text = f"{int(token_usage):,}" if isinstance(token_usage, int) else "未知"
         lines.append(
