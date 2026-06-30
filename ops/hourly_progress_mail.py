@@ -232,6 +232,18 @@ def pull_request_queue_lines(summary: dict[str, object], *, limit: int = 8) -> l
     ]
     if failed_repos:
         lines.append(f"- PR 采集失败仓库：{'、'.join(str(item) for item in failed_repos[:10])}")
+
+    def check_detail(checks: dict[str, object]) -> str:
+        parts: list[str] = []
+        for key, label in (("failed_checks", "failed"), ("pending_checks", "pending")):
+            names = checks.get(key) if isinstance(checks.get(key), list) else []
+            if names:
+                rendered = ", ".join(str(name) for name in names[:3])
+                if len(names) > 3:
+                    rendered += f", +{len(names) - 3}"
+                parts.append(f"{label}=[{rendered}]")
+        return "；" + "；".join(parts) if parts else ""
+
     groups = queue.get("supersede_groups") if isinstance(queue.get("supersede_groups"), list) else []
     for raw_group in groups[:4]:
         group = raw_group if isinstance(raw_group, dict) else {}
@@ -249,7 +261,7 @@ def pull_request_queue_lines(summary: dict[str, object], *, limit: int = 8) -> l
             "- "
             f"merge-ready {item.get('owner_agent', 'unknown')} -> {item.get('repo')} #{item.get('number')}："
             f"checks ok/fail/pending={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)}；"
-            f"{item.get('url')}"
+            f"{item.get('url')}{check_detail(checks)}"
         )
     items = queue.get("top_items") if isinstance(queue.get("top_items"), list) else []
     if not items:
@@ -266,7 +278,7 @@ def pull_request_queue_lines(summary: dict[str, object], *, limit: int = 8) -> l
             "- "
             f"{item.get('owner_agent', 'unknown')} -> {item.get('repo')} #{item.get('number')}：{item.get('merge_state')}；"
             f"checks ok/fail/pending={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)}；"
-            f"{item.get('action_category', 'inspect')}:{item.get('action')}；{item.get('url')}"
+            f"{item.get('action_category', 'inspect')}:{item.get('action')}；{item.get('url')}{check_detail(checks)}"
         )
     return lines
 

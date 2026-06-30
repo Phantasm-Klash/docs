@@ -422,26 +422,50 @@ def collect_pull_requests(root: Path, now: dt.datetime) -> dict[str, Any]:
     return prs
 
 
-def check_rollup_counts(item: dict[str, Any]) -> dict[str, int]:
-    counts = {"success": 0, "failed": 0, "pending": 0, "total": 0}
+def check_rollup_label(check: dict[str, Any]) -> str:
+    for field in ("name", "context", "workflowName", "__typename"):
+        value = check.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "unnamed-check"
+
+
+def check_rollup_counts(item: dict[str, Any]) -> dict[str, Any]:
+    counts: dict[str, Any] = {"success": 0, "failed": 0, "pending": 0, "total": 0, "failed_checks": [], "pending_checks": []}
     rollup = item.get("statusCheckRollup")
     if not isinstance(rollup, list):
         return counts
     for raw_check in rollup:
         check = raw_check if isinstance(raw_check, dict) else {}
         counts["total"] += 1
+        label = check_rollup_label(check)
         status = str(check.get("status") or "").upper()
         conclusion = str(check.get("conclusion") or "").upper()
         state = str(check.get("state") or "").upper()
         if status and status != "COMPLETED":
             counts["pending"] += 1
+            counts["pending_checks"].append(label)
         elif state in {"PENDING", "EXPECTED"}:
             counts["pending"] += 1
+            counts["pending_checks"].append(label)
         elif conclusion in {"", "SUCCESS", "SKIPPED", "NEUTRAL"} or state == "SUCCESS":
             counts["success"] += 1
         else:
             counts["failed"] += 1
+            counts["failed_checks"].append(label)
     return counts
+
+
+def check_rollup_detail(checks: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key, label in (("failed_checks", "failed"), ("pending_checks", "pending")):
+        names = checks.get(key) if isinstance(checks.get(key), list) else []
+        if names:
+            rendered = ", ".join(str(name) for name in names[:3])
+            if len(names) > 3:
+                rendered += f", +{len(names) - 3}"
+            parts.append(f"{label}=[{rendered}]")
+    return " ".join(parts)
 
 
 def pull_request_owner_agent(repo_name: str, head_ref: object) -> str:
@@ -921,20 +945,24 @@ def build_audit_report(summary: dict[str, Any]) -> str:
     for item in pull_request_queue.get("merge_ready_items", [])[:6]:
         if isinstance(item, dict):
             checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
+            check_detail = check_rollup_detail(checks)
+            detail_text = f" {check_detail}" if check_detail else ""
             pr_queue_lines.append(
                 "- "
                 f"merge-ready {item.get('owner_agent')} -> {item.get('repo')} #{item.get('number')} "
-                f"checks={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)} "
-                f"{item.get('url')}"
+                f"checks={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)}"
+                f"{detail_text} {item.get('url')}"
             )
     for item in pull_request_queue.get("top_items", [])[:8]:
         if isinstance(item, dict):
             checks = item.get("checks") if isinstance(item.get("checks"), dict) else {}
+            check_detail = check_rollup_detail(checks)
+            detail_text = f" {check_detail}" if check_detail else ""
             pr_queue_lines.append(
                 "- "
                 f"{item.get('owner_agent')} -> {item.get('repo')} #{item.get('number')} {item.get('merge_state')} "
-                f"checks={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)} "
-                f"action={item.get('action_category')}:{item.get('action')} {item.get('url')}"
+                f"checks={checks.get('success', 0)}/{checks.get('failed', 0)}/{checks.get('pending', 0)}"
+                f"{detail_text} action={item.get('action_category')}:{item.get('action')} {item.get('url')}"
             )
 
     agent_lines = []
