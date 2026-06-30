@@ -365,6 +365,38 @@ def agent_resource_risk_lines(summary: dict[str, object], *, limit: int = 6) -> 
     return lines
 
 
+def next_agent_action_lines(summary: dict[str, object], *, limit: int = 8) -> list[str]:
+    actions = summary.get("next_agent_actions") if isinstance(summary.get("next_agent_actions"), dict) else {}
+    if not actions:
+        return ["- 未读取到结构化下一步行动项；请查看 PR 行动队列和 agent 资源风险。"]
+    lines = [
+        (
+            "- "
+            f"count={actions.get('count', 0)}；"
+            f"by_agent={actions.get('by_agent', {})}；"
+            f"by_category={actions.get('by_category', {})}"
+        )
+    ]
+    items = actions.get("top_items") if isinstance(actions.get("top_items"), list) else []
+    if not items:
+        lines.append("- 当前没有可展示的下一步行动项。")
+        return lines
+    for raw_item in items[:limit]:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        url = evidence.get("url")
+        url_text = f"；{url}" if url else ""
+        lines.append(
+            "- "
+            f"{item.get('agent', 'unknown')} -> {item.get('repo', 'unknown')}："
+            f"priority={item.get('priority', 'unknown')}；"
+            f"{item.get('category', 'inspect')}；"
+            f"{item.get('action', '')}；"
+            f"{item.get('summary', '')}{url_text}"
+        )
+    return lines
+
+
 def section_lines_from_report(text: str, headings: tuple[str, ...], *, limit: int = 8) -> list[str]:
     if not text:
         return []
@@ -631,6 +663,9 @@ def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: 
         "",
         "Agent 资源风险:",
         *agent_resource_risk_lines(watchdog),
+        "",
+        "下一步行动:",
+        *next_agent_action_lines(watchdog),
         "",
         "审计 agent 汇报:",
         *latest_audit_report_lines(root, watchdog),
