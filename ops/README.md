@@ -70,6 +70,14 @@ closed as superseded before new work expands. The owner field is a routing hint
 for the next agent turn; it does not replace diff review or branch-protection
 gates.
 
+The same summary also includes `repo_state_risk`, which routes repository
+state that is not visible from PRs alone: dirty worktrees, local branches ahead
+or behind their upstream, missing checkouts, and root checkouts left on legacy
+agent branches. These entries are folded into `next_agent_actions` so prompts
+can tell the owning agent to absorb useful dirty work, push or rebuild local
+commits as a current-base PR, or avoid treating a legacy root checkout as the
+canonical baseline.
+
 SpellKard workers should use the Linux Godot binary at
 `/root/gotouhou/Godot_v4.7-stable_linux.x86_64` for headless checks. Server
 workers should prefer Docker regression through `docker-compose`; if a server
