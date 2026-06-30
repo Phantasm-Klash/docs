@@ -499,7 +499,7 @@ def log_info(path: Path | None) -> dict[str, Any]:
     stat = path.stat()
     text, sampled_bytes, tail_truncated = read_log_sample(path)
     exit_status = None
-    for match in re.finditer(r"\[goal-manager\] exited status=(\d+)", text):
+    for match in re.finditer(r"^\[goal-manager\] exited status=(\d+)\s*$", text, flags=re.MULTILINE):
         exit_status = int(match.group(1))
     token_usage = None
     token_matches = list(re.finditer(r"tokens used\s*\n\s*([0-9,]+)", text, flags=re.IGNORECASE))

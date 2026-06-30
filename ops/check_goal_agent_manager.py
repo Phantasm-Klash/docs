@@ -236,11 +236,26 @@ def check_live_lock_log_is_preferred_over_latest_old_log() -> None:
         assert selected_after_exit == live_log
 
 
+def check_exit_status_only_uses_runner_marker_line() -> None:
+    with tempfile.TemporaryDirectory(prefix="goal-agent-manager-exit-") as tmp:
+        root = Path(tmp)
+        log_path = root / "project-manager-agent-20260630T160000Z.log"
+        log_path.write_text(
+            "diff context mentions [goal-manager] exited status=1 inside a line\n"
+            " normal output\n"
+            "[goal-manager] exited status=0\n",
+            encoding="utf-8",
+        )
+        info = goal_agent_manager.log_info(log_path)
+        assert info["exit_status"] == 0
+
+
 def main() -> int:
     check_legacy_resource_risk_is_structured_not_managed()
     check_agent_health_promotes_version_and_resource_risk()
     check_read_only_samples_do_not_persist_authoritative_state()
     check_live_lock_log_is_preferred_over_latest_old_log()
+    check_exit_status_only_uses_runner_marker_line()
     print("check_goal_agent_manager ok")
     return 0
 
