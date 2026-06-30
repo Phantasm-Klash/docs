@@ -77,6 +77,34 @@ def check_running_log_staleness_becomes_resource_risk() -> None:
     assert "明确阻塞" in item["action"]
 
 
+def check_recent_large_managed_log_keeps_resource_risk() -> None:
+    summary = goal_agent_manager.build_agent_resource_risk(
+        {
+            "client-agent": {
+                "repo": "SpellKard",
+                "status": "running",
+                "runtime_log": {"token_usage": None, "bytes": 8_000},
+                "recent_log_pressure": {
+                    "window_hours": goal_agent_manager.RECENT_LOG_PRESSURE_HOURS,
+                    "sample_count": 4,
+                    "max_bytes": goal_agent_manager.LOG_BYTES_HIGH_RISK + 10,
+                    "medium_count": 2,
+                    "high_count": 1,
+                },
+            }
+        },
+        {"old_roster_records": [], "legacy_log_prefixes": []},
+    )
+
+    item = summary["items"][0]
+    assert item["agent"] == "client-agent"
+    assert item["severity"] == "high"
+    assert item["recent_log_max_bytes"] > goal_agent_manager.LOG_BYTES_HIGH_RISK
+    assert item["recent_log_high_count"] == 1
+    assert any("recent_log_bytes" in reason for reason in item["reasons"])
+    assert "停止复制长日志" in item["action"]
+
+
 def check_agent_health_promotes_version_and_resource_risk() -> None:
     agents = {
         "client-agent": {
@@ -439,6 +467,7 @@ def check_compact_summary_keeps_log_update_time() -> None:
 def main() -> int:
     check_legacy_resource_risk_is_structured_not_managed()
     check_running_log_staleness_becomes_resource_risk()
+    check_recent_large_managed_log_keeps_resource_risk()
     check_agent_health_promotes_version_and_resource_risk()
     check_managed_worktree_state_becomes_agent_actions()
     check_repo_state_health_actions_are_actionable_chinese()

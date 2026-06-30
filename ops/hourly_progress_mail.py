@@ -750,10 +750,23 @@ def resolve_summary_path(path: Path) -> Path:
     return path
 
 
+def load_summary_with_fallback(path: Path) -> tuple[Path, dict[str, object]]:
+    primary_path = resolve_summary_path(path)
+    primary = read_json(primary_path)
+    if primary:
+        return primary_path, primary
+
+    fallback = Path(LEGACY_WATCHDOG_SUMMARY)
+    if fallback != primary_path and fallback.exists():
+        fallback_summary = read_json(fallback)
+        if fallback_summary:
+            return fallback, fallback_summary
+    return primary_path, primary
+
+
 def build_brief_body(root: Path, repos: tuple[str, ...], watchdog_summary_path: Path) -> str:
     now = format_time_cn(None)
-    summary_path = resolve_summary_path(watchdog_summary_path)
-    watchdog = read_json(summary_path)
+    summary_path, watchdog = load_summary_with_fallback(watchdog_summary_path)
     lines = [
         f"gotouhou {REPORT_INTERVAL_HOURS}小时开发简报",
         f"Generated: {now}",
