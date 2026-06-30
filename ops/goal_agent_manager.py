@@ -570,6 +570,10 @@ Manager 下一步行动提示：
 5. 做阶段性 git commit。需要并行评审、跨仓、协议/网络/安全、回归修复或多人协作时推分支并开 PR。
 6. 用简短中文写 `/root/gotouhou/.agents/logs/{agent_id}-final.md`，包含完成内容、提交/PR、测试、阻塞风险、下一步。
 
+日志/输出约束：
+- 不要 `cat`、复制或粘贴长日志、完整测试输出、完整 diff、完整 JSON；读取日志只用 bounded tail、结构化摘要或关键错误检索。
+- 中高资源风险时，本轮只写 3-5 行关键结论：检查命令与结果、PR/branch 状态、失败命令、首个关键错误、下一步动作。
+
 不要只写计划后退出；完成一个小切片后继续迭代下一个小切片。只有模型容量、网络、权限、branch protection、依赖下载或测试环境硬阻塞时，才写清非敏感原因并退出，等待 manager 检测状态后补救。
 """
 
@@ -1537,42 +1541,42 @@ def build_agent_resource_risk(
             if log_age_seconds >= RUNNING_LOG_STALE_HIGH_SECONDS:
                 severity = "high"
                 reasons.append(f"running_log_stale_seconds>={RUNNING_LOG_STALE_HIGH_SECONDS}")
-                action = "立即检查该 agent 是否卡在测试/网络/权限；把下一轮压缩为提交、推送、PR 或明确阻塞"
+                action = "立即检查是否卡在测试/网络/权限；禁止粘贴长日志，只写失败命令、关键错误和提交/PR/阻塞"
             elif log_age_seconds >= RUNNING_LOG_STALE_MEDIUM_SECONDS:
                 severity = "medium"
                 reasons.append(f"running_log_stale_seconds>={RUNNING_LOG_STALE_MEDIUM_SECONDS}")
-                action = "下轮优先要求该 agent 收敛当前小切片并刷新 final/status，不继续扩展任务"
+                action = "下轮收敛当前小切片并刷新 final/status；日志只写结构化摘要，不继续扩展任务"
 
         if isinstance(token_usage, int):
             if token_usage >= TOKEN_HIGH_RISK:
                 severity = "high"
                 reasons.append(f"last_run_tokens>={TOKEN_HIGH_RISK}")
-                action = "把下一轮切成更小的 PR-ready 切片，final 只写结论、提交/PR、测试和阻塞"
+                action = "把下一轮切成更小的 PR-ready 切片；final 只写结论、提交/PR、测试和阻塞，不贴长输出"
             elif token_usage >= TOKEN_MEDIUM_RISK:
                 if severity == "low":
                     severity = "medium"
                 reasons.append(f"last_run_tokens>={TOKEN_MEDIUM_RISK}")
-                action = "缩短下一轮任务，先提交/推送已验证成果再扩展"
+                action = "缩短下一轮任务；先提交/推送已验证成果，检查输出只保留摘要和关键错误"
         elif agent.get("status") == "running":
             reasons.append("running_without_final_token_sample")
 
         if log_bytes >= LOG_BYTES_HIGH_RISK:
             severity = "high"
             reasons.append(f"log_bytes>={LOG_BYTES_HIGH_RISK}")
-            action = "停止复制长日志；只汇总检查结果、PR 状态和关键错误"
+            action = "停止复制长日志和完整 diff；只汇总检查结果、PR 状态、失败命令和关键错误"
         elif log_bytes >= LOG_BYTES_MEDIUM_RISK and severity == "low":
             severity = "medium"
             reasons.append(f"log_bytes>={LOG_BYTES_MEDIUM_RISK}")
-            action = "压缩报告和日志尾部，优先写结构化状态字段"
+            action = "压缩报告和日志尾部；只写结构化状态字段、失败命令和关键错误"
 
         if recent_max_bytes >= LOG_BYTES_HIGH_RISK:
             severity = "high"
             reasons.append(f"recent_log_bytes>={LOG_BYTES_HIGH_RISK}")
-            action = "停止复制长日志；只汇总检查结果、PR 状态和关键错误"
+            action = "停止复制长日志和完整 diff；只汇总检查结果、PR 状态、失败命令和关键错误"
         elif recent_max_bytes >= LOG_BYTES_MEDIUM_RISK and severity == "low":
             severity = "medium"
             reasons.append(f"recent_log_bytes>={LOG_BYTES_MEDIUM_RISK}")
-            action = "压缩报告和日志尾部，优先写结构化状态字段"
+            action = "压缩报告和日志尾部；只写结构化状态字段、失败命令和关键错误"
 
         if not reasons:
             reasons.append("within_current_thresholds")
