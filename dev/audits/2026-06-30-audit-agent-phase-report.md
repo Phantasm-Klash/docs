@@ -1,57 +1,53 @@
 # audit-agent 阶段审计报告
 
-审计时间：2026-06-30 11:39 UTC
+审计时间：2026-06-30 14:56 UTC
 
 ## 总体判断
 
 - docs/dev 主线未变：整体仍按约 38% 估算，当前主线是 Phase 3 服务器权威在线 MVP 与服务拆分收敛；Phase 2/6/8 的客户端、UI、Boss 模式切片仍在并行补齐。
-- 本轮审计未发现 Gensoulkyo #22 或 PhK-BattleServer #18 偏离方向：两者都围绕 Nakama/Go 业务服与 C++ Battle Server 的服务器权威边界收紧，而不是把客户端或 Go HTTP fallback 重新做成生产战斗权威。
-- 当前 open PR 数为 10：merge-ready 3 个，needs-action 7 个。docs #32、Gensoulkyo #22、PhK-BattleServer #18 均为 `CLEAN` 且 GitHub checks 通过；SpellKard #13-#19 仍是唯一成组版本流阻塞。
-- 最高风险仍是客户端版本流：SpellKard 根仓 `main...origin/main [ahead 34]`，open PR #13/#15/#16/#18 为 `DIRTY`，#14/#17/#19 为 `BEHIND`。继续扩新 UI/Boss 功能前，应开 current-base fresh PR 或逐项 close/supersede。
-- Gensoulkyo 根仓仍停在旧分支 `agent/gensoulkyo-lobby/20260629-0900`，有 4 个未提交信号：3 个已跟踪文件修改和 1 个新增 `cmd/gensoulkyo_nakama/module_nakama_test.go`。audit-agent 未触碰，应由 nakama-server-agent 吸收、重建或明确废弃。
-- 旧 agent 身份 `change-describer`、`gensoulkyo-lobby`、`phk-battle-server`、`plan-auditor`、`spellkard-bullet`、`spellkard-ui` 应继续冻结，只迁移已验证且仍有价值的工作到五个 managed agents。
+- 当前 open PR 数为 2：Gensoulkyo #28 与 PhK-BattleServer #26 均为 `CLEAN`，各自 2 个 GitHub checks 通过；因为都触及协议/网络/安全敏感面，合并前仍需要人工 diff 审阅和 protocol audit 证据确认。
+- 本轮未发现两个 PR 偏离 docs/dev 方向：#28 收紧服务端 HTTP/Nakama callback 与 business envelope 边界，#26 绑定 Boss transfer/result/replay 审计材料和 mode-action authority guard，都在强化服务器权威而非扩大客户端权威。
+- 当前最高版本风险不是 PR 冲突，而是根 checkout 状态：`docs` 根仓 `main...origin/main [ahead 1, behind 23]`，`Gensoulkyo` 根仓旧分支 dirty 4，`PhK-BattleServer` 根仓仍在旧 agent 分支。后续新工作应使用 managed worktree 或 current-base 分支，不应把这些根 checkout 当基线。
+- 旧 agent 身份 `change-describer`、`gensoulkyo-lobby`、`phk-battle-server`、`plan-auditor`、`spellkard-bullet`、`spellkard-ui` 应继续冻结；只把仍有效的代码或审计证据迁移到五个 managed agents。
 
-## 仓库状态
+## 仓库状态与版本风险
 
-- `docs`：当前分支 `agent/audit-agent/gensoulkyo-pr22-audit-20260630-1125...origin/agent/audit-agent/gensoulkyo-pr22-audit-20260630-1125`，本轮写入新的审计报告切片；PR #32 为 `CLEAN`，`docs-audit` 与 `auto-merge` 均通过。
-- `SpellKard`：根仓 `main...origin/main [ahead 34]` 且干净；open PR 7 个，全部需要更新、冲突处理或 supersede。
-- `Gensoulkyo`：根仓 dirty 4；PR #22 `Tighten business settlement and service callback contracts` 为 `CLEAN`，`server-contract-tests` 与 `auto-merge` 均通过。
-- `PhK-BattleServer`：根仓在旧 `agent/phk-battle-server/20260629-0030` 且干净；PR #18 `Bind boss defeated tick projection` 为 `CLEAN`，`battle-server-checks` 与 `auto-merge` 均通过。
-- `PhK-Protocol`：`main...origin/main` 干净，open PR 为 0；仍需把临时 manifest/JSON descriptor bridge 升级为真实 protobuf Go/C++/Godot 生成物。
+- `docs`：根仓仍在 `main...origin/main [ahead 1, behind 23]`，本地 `b9dee78 ops: summarize agent resource risk` 已被远端后续审计/ops 提交覆盖到主线语义里，但根 checkout 本身仍需由 project-manager-agent 推 PR、同步或重建；本轮 audit-agent 从 `origin/main` 新建 `agent/audit-agent/current-audit-20260630-1455` 工作树，避免继续污染根 `main`。
+- `SpellKard`：根仓 `main...origin/main` 干净，当前没有 open PR；client-agent 仍运行中，下一步重点应是把 UI/Boss/Replay 合同继续保持 headless 可验证，而不是重开旧分片式 agent。
+- `Gensoulkyo`：根仓仍在旧 `agent/gensoulkyo-lobby/20260629-0900`，dirty 4：`cmd/gensoulkyo_nakama/README.md`、`module.go`、`module_source_test.go` 修改，新增 `module_nakama_test.go`。这些改动看起来围绕 Nakama service-origin callback context vars gate，但 audit-agent 未回滚；应由 nakama-server-agent 在最新 main 上判断吸收、重建或明确废弃。
+- `PhK-BattleServer`：根仓仍在旧 `agent/phk-battle-server/20260629-0030` 且干净，不应作为 canonical baseline；battle-server-agent managed worktree 才是后续工作入口。
+- `PhK-Protocol`：`main...origin/main` 干净，open PR 为 0；仍需继续把 manifest/JSON bridge 收敛到真实 protobuf Go/C++/Godot 生成物。
 
 ## PR 抽审
 
-- Gensoulkyo #22 文件面：`runtime/core/service.go`、`runtime/httpapi/handler.go`、`runtime/nakamaapi/handler.go` 及对应测试，外加 Nakama module README/source/test。方向是 service callback envelope、settlement/result projection 与 forbidden authority field 守卫，符合 Phase 3 业务服权威边界；合并前仍建议人工 diff 审阅并保留 protocol audit 证据。
-- PhK-BattleServer #18 文件面：`include/phk/battle/result.hpp`、`simulation.hpp`、`src/result.cpp`、`src/server.cpp`、`src/simulation.cpp`、`tests/battle_server_tests.cpp`、`tools/check_battle_server.py`，并同步 `dev/progress.md`、`docs/architecture.md`。方向是 Boss result/replay 投影验真、连接/断线计数与 layout 字段绑定，符合 C++ 战斗服结算签名边界；合并前仍需人工 diff 审阅。
-- docs #32 文件面：仅 `dev/audits/2026-06-30-audit-agent-phase-report.md`，是审计报告更新，不改协议、网络、匹配、战斗服、鉴权或安全实现。
-- SpellKard #13/#15/#16/#18：`DIRTY`，需要冲突解决或用 current-base fresh PR 替代。
-- SpellKard #14/#17/#19：`BEHIND`，需要更新分支、重跑 checks、评审，或明确 supersede。
+- Gensoulkyo #28 `Keep HTTP service callbacks out of player envelope guard`：6 个提交，9 个文件，+162/-6。文件面包括 `runtime/httpapi/handler.go`、`runtime/nakamaapi/handler.go`、`runtime/security/business_envelope_adapters.go`、`runtime/core/service.go` 及测试和 README。PR 描述列出 `go test ./runtime/httpapi ./runtime/security`、`go test ./runtime/httpapi ./runtime/core ./runtime/nakamaapi`、`docker-compose --profile test run --rm test`、`protocol_audit_check.py`；GitHub `server-contract-tests` 与 `auto-merge` 均通过。方向符合 Phase 3 的业务服 envelope/callback 安全边界；合并前仍需人工看 diff，特别是 callback allowlist 与 player envelope guard 的绕过条件。
+- PhK-BattleServer #26 `Bind Boss transfer aggregate audit material`：3 个提交，9 个文件，+234/-10。文件面包括 `include/phk/battle/result.hpp`、`simulation.hpp`、`src/result.cpp`、`src/server.cpp`、`src/simulation.cpp`、`tests/battle_server_tests.cpp`、`tools/check_battle_server.py`，并同步 `dev/progress.md`、`docs/architecture.md`。PR 描述列出 `docker-compose run --rm test`、`python3 tools/check_battle_server.py`、`protocol_audit_check.py`；GitHub `battle-server-checks` 与 `auto-merge` 均通过。方向符合 C++ 战斗服 result/replay/hash 审计边界；合并前重点看 transfer aggregate 是否只做审计/结果投影，不写库存、奖励、钱包、Steam 或数据库。
+- PR 队列采样：`needs_action=0`、`ready=2`、`by_repo={'Gensoulkyo': 1, 'PhK-BattleServer': 1}`、`by_state={'CLEAN': 2}`。这两个 ready PR 仍被 review gate 标记为 `protocol_network_security`，不能仅凭 auto-merge 绿灯跳过审查。
 
 ## Agent 采样
 
-- `client-agent`：11:23 final 显示已提交 Boss HUD projection 与 draw snapshot，`ci_static_checks.py`、Godot client smoke、Godot UI smoke 通过。当前 manager 已在 11:30 重启为 running；资源风险 high，后续应短切片并先清 SpellKard PR 队列。
-- `battle-server-agent`：11:23 final 显示已在 PR #18 增加 Boss signed result 审计绑定，`tools/check_battle_server.py`、`docker-compose run --rm test`、`protocol_audit_check.py` 通过。当前 running；资源风险 medium。
-- `nakama-server-agent`：11:23 final 显示已在 PR #22 收紧 battle result submit 的 authority field 拒绝，Go tests、`docker-compose --profile test run --rm test`、`protocol_audit_check.py` 通过。当前 running；根仓旧 dirty 4 仍需单独处理。
-- `project-manager-agent`：11:23 final 显示 docs #31 已合并，manager summary 现在能显示 failed/pending check 名称；当前 running；资源风险 high。
-- `audit-agent`：本轮刷新阶段审计报告、三小时邮件优先正文和 final 日志，重点校正 open PR、SpellKard stale group、Gensoulkyo dirty work 与 token 风险。
+- `audit-agent`：running，repo=docs，workdir `/root/gotouhou/docs`，本轮新建 current-base worktree 完成审计报告与 ops 队列分类小修。
+- `battle-server-agent`：running，repo=PhK-BattleServer，日志已超过 3MB，资源风险 high；应停止把长日志粘进报告，保持小 PR 与结构化验证。
+- `client-agent`：running，repo=SpellKard，日志超过 2.5MB，资源风险 medium；继续要求短切片、headless 检查和及时 PR/提交。
+- `nakama-server-agent`：最近一轮 completed，repo=Gensoulkyo，约 652,283 tokens，资源风险 high；下一轮优先处理根 dirty 4 和 #28 合并后的同步。
+- `project-manager-agent`：最近一轮 completed，repo=docs，约 317,210 tokens，资源风险 medium；应先修 docs 根 checkout ahead/behind，再继续调度新工作。
 
 ## 测试证据
 
-- 最新全局回归摘要：2026-06-30T09:00:24Z，`ok=true`、`failed=0`、`ignored=0`。
-- 全局摘要包含 SpellKard Godot headless UI/Boss 检查、跨仓 `protocol_audit_check.py`、Gensoulkyo 与 PhK-BattleServer `docker-compose config`；docker 与 `docker-compose` 均可用。
-- 本轮 audit-agent 只改 docs 审计报告和 `.agents` 邮件正文，不改协议/网络/匹配/战斗服/鉴权/安全代码；按人格文档运行 ops 最小检查即可。
+- 本轮 audit-agent 最小检查：`python3 ops/goal_agent_manager.py --dry-run --root /root/gotouhou --no-start` 通过，采样显示 open PR 2、ready 2、repo state risk 5。
+- 最新全局回归摘要：2026-06-30T12:00:21Z，`ok=true`、`failed=0`、`ignored=0`。
+- 全局摘要包含 SpellKard Godot headless UI/Boss 检查、跨仓 `protocol_audit_check.py`、Gensoulkyo `docker-compose config`、PhK-BattleServer `docker-compose config`；docker 与 `docker-compose` 均可用。
+- 本轮只改 docs 审计报告和 ops PR 分类，不改协议、网络、匹配、战斗服、鉴权或安全实现；不额外触发 protocol audit。
 
-## Token 与停滞风险
+## 本轮小切片
 
-- agent 资源风险：high=3、medium=3。high 为 audit-agent 561,844 tokens、client-agent 659,152 tokens、project-manager-agent 850,728 tokens；medium 为 battle-server-agent 386,467 tokens、nakama-server-agent 449,284 tokens、legacy-agent-roster。
-- 当前没有新五 agent 停滞证据；manager 在 11:30 重新拉起所有 cleanly exited agents，运行中 agent 不应被三小时邮件打断。
-- 停滞风险来自合并速度低于产出速度：SpellKard stale PR group、Gensoulkyo 旧 dirty worktree、ready PR 合并前人工审阅速度慢。
-- 旧 agent 应继续清退：不再启动旧 roster，不从旧日志直接调度；只把 still-valid work 迁移到 client/battle/nakama/audit/project-manager 五个 agent。
+- 修正 `ops/goal_agent_manager.py` 的 PR 分类优先级：失败 checks 之后先处理冲突/落后，再优先显示 pending checks，最后才归为 branch/review gate blocked。这样 CI 仍在运行的协议/安全 PR 不会被误报为纯 branch protection 阻塞。
+- 刷新三小时审计报告事实：当前只有 Gensoulkyo #28 和 PhK-BattleServer #26 两个 open PR；SpellKard 旧 PR 队列已清空；版本风险转为根 checkout 与旧 dirty worktree 清理。
 
 ## 下一步
 
-- client-agent：暂停扩大功能面，优先处理 SpellKard #13-#19 和 root main ahead 34，开一个 fresh current-base PR 或逐项记录 supersede/close 决策。
-- nakama-server-agent：合并 #22 后同步工作树；处理旧 dirty 4；下一步仍是 Nakama tag-build CI、真实 PostgreSQL audit sink wiring 与 service-origin callback 持久化。
-- battle-server-agent：合并 #18 后再推进 protobuf C++ 绑定、真实 Ed25519 ticket/result 验签、X25519/KCP/AEAD。
-- project-manager-agent：把 stale group、merge-ready PR、failed/pending check 名称继续转成可执行清退表，避免三小时邮件只报告数量。
-- audit-agent：保持短中文审计，继续追踪 PR/dirty work/测试证据/旧 agent 清退/token 风险。
+- nakama-server-agent：优先处理 Gensoulkyo 根 dirty 4；若仍有价值，应在最新 main/current managed branch 上重做为小 PR，并跑 `docker-compose --profile test run --rm test` 与 `protocol_audit_check.py`。
+- battle-server-agent：人工审阅并合并 #26 后，同步 managed branch，再推进真实 Ed25519/X25519/KCP/protobuf/AEAD 或 replay/hash golden validation。
+- project-manager-agent：清理 docs 根 `ahead 1, behind 23`，不要继续从落后 `main` 生成报告或调度。
+- client-agent：保持当前无 open PR 状态，继续用小切片推进正式 UI/Boss/Replay 合同，避免恢复旧 spellkard-bullet/spellkard-ui 分片 agent。
+- audit-agent：继续短中文审计 PR、dirty work、测试证据、旧 agent 清退与 token 风险，三小时邮件正文优先使用本报告。

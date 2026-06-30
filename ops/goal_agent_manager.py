@@ -788,10 +788,10 @@ def classify_pull_request_action(item: dict[str, Any], checks: dict[str, int]) -
         return 10, "resolve_conflicts", "resolve conflicts or supersede with the current persistent branch"
     if merge_state == "BEHIND":
         return 20, "update_branch", "update branch against main, rerun checks, then review"
-    if merge_state in {"BLOCKED", "HAS_HOOKS"}:
-        return 30, "blocked_gate", "wait for required review/check gates or branch protection"
     if checks.get("pending", 0) > 0:
-        return 40, "wait_checks", "wait for pending checks"
+        return 30, "wait_checks", "wait for pending checks"
+    if merge_state in {"BLOCKED", "HAS_HOOKS"}:
+        return 40, "blocked_gate", "wait for required review/check gates or branch protection"
     if merge_state == "CLEAN":
         return 60, "merge_ready", "ready for review/merge"
     return 50, "inspect", f"inspect merge state {merge_state}"
