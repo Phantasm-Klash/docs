@@ -70,6 +70,14 @@ closed as superseded before new work expands. The owner field is a routing hint
 for the next agent turn; it does not replace diff review or branch-protection
 gates.
 
+The manager reads agent logs as bounded tail samples instead of loading whole
+log files. Reports should prefer structured fields such as `status`,
+`runtime_log.bytes`, `runtime_log.token_usage`, `agent_resource_risk`,
+`repo_state_risk`, `pull_request_queue`, and `next_agent_actions`; use
+`runtime_log.tail` only for short diagnostics. The manager's default CLI output
+is also compact; pass `--full-output` only when a local full JSON inspection is
+needed.
+
 The same summary also includes `repo_state_risk`, which routes repository
 state that is not visible from PRs alone: dirty worktrees, local branches ahead
 or behind their upstream, missing checkouts, and root checkouts left on legacy
