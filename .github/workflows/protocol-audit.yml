@@ -2,14 +2,6 @@ name: Protocol Audit
 
 on:
   pull_request:
-    paths:
-      - "dev/gotouhou/02_networked_match/**"
-      - "dev/gotouhou/04_server_database_economy/**"
-      - "dev/gotouhou/08_game_modes/**"
-      - "docs/protocol-audit-process.md"
-      - "ops/protocol_audit_check.py"
-      - ".github/CODEOWNERS"
-      - ".github/workflows/protocol-audit.yml"
   workflow_dispatch:
 
 permissions:
