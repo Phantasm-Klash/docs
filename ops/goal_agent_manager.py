@@ -141,7 +141,7 @@ AGENTS: dict[str, dict[str, Any]] = {
         "repo": "docs",
         "key_aliases": ("manager", "project-manager", "pm", "ops", "docs", "other"),
         "branch": "agent/project-manager-agent/persistent",
-        "summary": "项目推进与自动调度，读取 docs/dev、agent 日志、git/PR 状态并调整 agent 方向。",
+        "summary": "项目推进与自动调度，读取 docs/dev、agent 日志、git/PR 状态并主动推动交付闭环。",
         "docs": (
             "docs/dev/progress.md",
             "docs/dev/gotouhou",
@@ -157,7 +157,8 @@ AGENTS: dict[str, dict[str, Any]] = {
         "mission": (
             "作为项目推进和自动调度 agent，持续读取 docs/dev 路线、各 agent 日志、git 状态、PR 状态、回归结果和阻塞项；"
             "把客户端、战斗服、Nakama、审计 agent 的下一步任务收敛成可执行小切片，必要时更新 persona/prompt，"
-            "推动阶段性 commit、branch/PR、测试和合并节奏。只管理调度、评分、提示词、审计和版本流程，"
+            "推动阶段性 commit、branch/PR、测试、复采样和合并节奏；对低分、dirty、ahead、PR 堆积或长日志 agent 优先止血。"
+            "只管理调度、评分、提示词、审计和版本流程，"
             "不得直接实现客户端/战斗服/Nakama 业务代码。只按 agent 身份管理，不恢复 scope/路径分片概念。"
         ),
     },
@@ -299,6 +300,8 @@ def agent_operating_limits(agent_id: str) -> str:
         "project-manager-agent": [
             "- 只做项目推进、调度、评分、提示词和版本流程管理；不得直接实现 client/battle/nakama 业务代码。",
             "- 每轮读取 docs/dev、agent 日志、PR、回归和 git 状态，给低分 agent 写清下一步小切片、测试和 PR 要求。",
+            "- 监督周期内必须主动推进交付闭环：发现 agent dirty/ahead、PR 堆积、检查失败、长日志或状态不一致时，先派发/调整对应 agent 去提交、推送、开 PR、修复或复采样。",
+            "- 若 15 分钟摘要和 systemd 实际 unit 不一致，优先修正 manager 采样与状态文件，不允许邮件继续使用旧摘要。",
             "- 可以修改 docs/ops 的 manager、邮件、提示词和队列逻辑；业务修复必须分派给对应 owning agent 或单独 fix agent。",
             "- 合并或推动合并 PR 后，必须立即运行正常 manager 复采样，刷新 summary/actions/mail 输入，避免已合并 PR 继续出现在下一步行动里。",
             "- 只按 agent 身份管理，禁止恢复旧 scope/路径分片模型。",
@@ -469,6 +472,15 @@ def latest_log(root: Path, agent_id: str) -> Path | None:
     return logs[-1] if logs else None
 
 
+def current_log_path(root: Path, agent_id: str, lock: dict[str, Any]) -> Path | None:
+    """Prefer the live run's log path so a fresh restart is not scored from old logs."""
+    raw_path = lock.get("log_path") if isinstance(lock, dict) else None
+    if lock.get("alive") and isinstance(raw_path, str) and raw_path:
+        path = Path(raw_path)
+        return path
+    return latest_log(root, agent_id)
+
+
 def read_log_sample(path: Path, max_bytes: int = LOG_SAMPLE_BYTES) -> tuple[str, int, bool]:
     stat = path.stat()
     sample_bytes = min(stat.st_size, max_bytes)
@@ -480,8 +492,10 @@ def read_log_sample(path: Path, max_bytes: int = LOG_SAMPLE_BYTES) -> tuple[str,
 
 
 def log_info(path: Path | None) -> dict[str, Any]:
-    if path is None or not path.exists():
+    if path is None:
         return {"exists": False}
+    if not path.exists():
+        return {"exists": False, "path": str(path), "pending_create": True}
     stat = path.stat()
     text, sampled_bytes, tail_truncated = read_log_sample(path)
     exit_status = None
@@ -1115,6 +1129,10 @@ def lock_status(root: Path, agent_id: str, now: dt.datetime) -> dict[str, Any]:
         "exists": path.exists(),
         "unit": unit,
         "alive": alive,
+        "log_path": payload.get("log_path") if isinstance(payload, dict) else None,
+        "runner_path": payload.get("runner_path") if isinstance(payload, dict) else None,
+        "prompt_path": payload.get("prompt_path") if isinstance(payload, dict) else None,
+        "cwd": payload.get("cwd") if isinstance(payload, dict) else None,
         "age_seconds": age_seconds,
         "started_at": iso(started_at) if started_at else None,
     }
@@ -1961,7 +1979,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
             "workspace": str(root / ".agents" / "workspaces" / agent_id / "README.md"),
         }
         lock = lock_status(root, agent_id, now)
-        log = log_info(latest_log(root, agent_id))
+        log = log_info(current_log_path(root, agent_id, lock))
         start, reason = should_start_agent(lock, log, args.force_start, now)
         result: dict[str, Any] | None = None
         if start and not lock.get("alive") and worktree.get("ready", False):
@@ -1984,7 +2002,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
                 )
             actions.append({"type": "start-goal-agent", "agent": agent_id, "reason": reason, "result": result})
             lock = lock_status(root, agent_id, utcnow())
-            log = log_info(latest_log(root, agent_id))
+            log = log_info(current_log_path(root, agent_id, lock))
         elif start and not worktree.get("ready", False):
             action_type = "would-prepare-worktree" if args.no_start else "worktree-blocked"
             actions.append({"type": action_type, "agent": agent_id, "reason": str(worktree.get("error") or worktree.get("output") or "worktree not ready")})

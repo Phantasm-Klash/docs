@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import os
 from pathlib import Path
 
 
@@ -204,10 +205,42 @@ def check_read_only_samples_do_not_persist_authoritative_state() -> None:
             goal_agent_manager.prepare_worktree = original_prepare_worktree
 
 
+def check_live_lock_log_is_preferred_over_latest_old_log() -> None:
+    with tempfile.TemporaryDirectory(prefix="goal-agent-manager-log-") as tmp:
+        root = Path(tmp)
+        log_dir = root / ".agents" / "logs"
+        log_dir.mkdir(parents=True)
+        old_log = log_dir / "project-manager-agent-20260630T150000Z.log"
+        live_log = log_dir / "project-manager-agent-20260630T151500Z.log"
+        old_log.write_text("[goal-manager] exited status=0\ntokens used\n999,999\n", encoding="utf-8")
+        live_log.write_text("[goal-manager] started project-manager-agent\n", encoding="utf-8")
+        os.utime(old_log, (1, 1))
+        os.utime(live_log, (2, 2))
+
+        selected = goal_agent_manager.current_log_path(
+            root,
+            "project-manager-agent",
+            {"alive": True, "log_path": str(live_log)},
+        )
+        assert selected == live_log
+        live_info = goal_agent_manager.log_info(selected)
+        assert live_info["exists"] is True
+        assert live_info["exit_status"] is None
+        assert live_info["token_usage"] is None
+
+        selected_after_exit = goal_agent_manager.current_log_path(
+            root,
+            "project-manager-agent",
+            {"alive": False, "log_path": str(live_log)},
+        )
+        assert selected_after_exit == live_log
+
+
 def main() -> int:
     check_legacy_resource_risk_is_structured_not_managed()
     check_agent_health_promotes_version_and_resource_risk()
     check_read_only_samples_do_not_persist_authoritative_state()
+    check_live_lock_log_is_preferred_over_latest_old_log()
     print("check_goal_agent_manager ok")
     return 0
 
