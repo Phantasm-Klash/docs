@@ -205,6 +205,7 @@ def check_managed_worktree_state_becomes_agent_actions() -> None:
                 "dirty": [" M godot/project.godot", "?? godot/tests/new_test.gd"],
                 "ahead": 3,
                 "behind": 0,
+                "upstream_gone": False,
             },
         },
         "battle-server-agent": {
@@ -218,6 +219,8 @@ def check_managed_worktree_state_becomes_agent_actions() -> None:
                 "dirty": [],
                 "ahead": 0,
                 "behind": 1,
+                "upstream_gone": True,
+                "tracking": "origin/agent/battle-server-agent/current-20260630-1824",
             },
         },
     }
@@ -233,9 +236,56 @@ def check_managed_worktree_state_becomes_agent_actions() -> None:
     assert ("client-agent", "managed_worktree_dirty") in categories
     assert ("client-agent", "managed_worktree_ahead") in categories
     assert ("battle-server-agent", "managed_worktree_behind") in categories
+    assert ("battle-server-agent", "managed_worktree_upstream_gone") in categories
     assert actions["by_agent"]["client-agent"] == 2
+    assert actions["by_agent"]["battle-server-agent"] == 2
     assert any("先收敛当前代码切片" in item["action"] for item in actions["items"])
     assert any("不要继续堆 only-local 提交" in item["action"] for item in actions["items"])
+    assert any("已删除" in item["action"] for item in actions["items"])
+
+
+def check_upstream_gone_status_becomes_repo_and_health_risk() -> None:
+    status = "## agent/battle-server-agent/current-20260630-1824...origin/agent/battle-server-agent/current-20260630-1824 [gone]"
+    branch_info = goal_agent_manager.repo_status_branch_info(status)
+    assert branch_info["upstream_gone"] is True
+    assert branch_info["tracking"] == "origin/agent/battle-server-agent/current-20260630-1824"
+
+    repo_state = goal_agent_manager.build_repo_state_risk(
+        {
+            "PhK-BattleServer": {
+                "repo": "PhK-BattleServer",
+                "branch": "agent/battle-server-agent/current-20260630-1824",
+                "head": "e1549aa",
+                "status": status,
+                "dirty_count": 0,
+                "dirty": [],
+            }
+        }
+    )
+    upstream_items = [item for item in repo_state["items"] if item["category"] == "upstream_gone"]
+    assert upstream_items
+    assert upstream_items[0]["evidence"]["tracking"] == "origin/agent/battle-server-agent/current-20260630-1824"
+
+    agents = {
+        agent_id: {
+            "repo": goal_agent_manager.AGENTS[agent_id]["repo"],
+            "status": "running",
+            "progress": True,
+            "key_available": True,
+            "worktree_state": {
+                "missing": False,
+                "dirty_count": 0,
+                "ahead": 0,
+                "behind": 0,
+                "upstream_gone": agent_id == "battle-server-agent",
+            },
+        }
+        for agent_id in goal_agent_manager.MANAGED_AGENT_IDS
+    }
+    health = goal_agent_manager.build_agent_health(agents, repo_state, {"items": []}, {"items": []}, {"items": []})
+    battle = health["agents"]["battle-server-agent"]
+    assert any("upstream gone" in reason for reason in battle["reasons"])
+    assert any("切回最新 origin/main" in action for action in battle["actions"])
 
 
 def check_repo_state_health_actions_are_actionable_chinese() -> None:
@@ -482,6 +532,7 @@ def main() -> int:
     check_recent_large_managed_log_keeps_resource_risk()
     check_agent_health_promotes_version_and_resource_risk()
     check_managed_worktree_state_becomes_agent_actions()
+    check_upstream_gone_status_becomes_repo_and_health_risk()
     check_repo_state_health_actions_are_actionable_chinese()
     check_project_manager_prompt_sees_global_action_queue()
     check_read_only_samples_do_not_persist_authoritative_state()
