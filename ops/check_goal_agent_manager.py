@@ -47,8 +47,29 @@ def check_legacy_resource_risk_is_structured_not_managed() -> None:
     assert not any("legacy-agent-roster" in line for line in mail_lines[1:])
 
 
+def check_pending_pr_checks_are_not_reported_as_branch_gate() -> None:
+    priority, category, action = goal_agent_manager.classify_pull_request_action(
+        {"mergeStateStatus": "BLOCKED"},
+        {"pending": 1, "failed": 0},
+    )
+
+    assert priority == 30
+    assert category == "wait_checks"
+    assert action == "wait for pending checks"
+
+    priority, category, action = goal_agent_manager.classify_pull_request_action(
+        {"mergeStateStatus": "BLOCKED"},
+        {"pending": 0, "failed": 0},
+    )
+
+    assert priority == 40
+    assert category == "blocked_gate"
+    assert action == "wait for required review/check gates or branch protection"
+
+
 def main() -> int:
     check_legacy_resource_risk_is_structured_not_managed()
+    check_pending_pr_checks_are_not_reported_as_branch_gate()
     print("check_goal_agent_manager ok")
     return 0
 
