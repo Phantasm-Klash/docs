@@ -306,7 +306,31 @@ Key alias：`{key_alias or "(missing)"}`
 """
 
 
-def agent_prompt(agent_id: str, agent: dict[str, Any], persona_path: Path, workdir: Path, key_assignment: dict[str, Any]) -> str:
+def previous_next_action_prompt(agent_id: str, previous: dict[str, Any]) -> str:
+    next_actions = previous.get("next_agent_actions") if isinstance(previous.get("next_agent_actions"), dict) else {}
+    items = next_actions.get("items") if isinstance(next_actions.get("items"), list) else []
+    lines: list[str] = []
+    for raw_item in items:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        if item.get("agent") != agent_id:
+            continue
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        url = evidence.get("url")
+        url_text = f" {url}" if url else ""
+        lines.append(
+            "- "
+            f"priority={item.get('priority')} category={item.get('category')} "
+            f"repo={item.get('repo')} action={item.get('action')} "
+            f"summary={item.get('summary')}{url_text}"
+        )
+        if len(lines) >= 5:
+            break
+    if not lines:
+        return "- 当前没有 manager 写入的结构化下一步行动项；按 docs/dev 和当前仓库状态选择最小切片。"
+    return "\n".join(lines)
+
+
+def agent_prompt(agent_id: str, agent: dict[str, Any], persona_path: Path, workdir: Path, key_assignment: dict[str, Any], previous: dict[str, Any]) -> str:
     return f"""你现在是 `{agent_id}`，必须按 Codex `/goal` 持续目标模式工作。
 
 先完整阅读人格文档：`{persona_path}`。
@@ -317,6 +341,9 @@ Key alias：`{key_assignment.get("alias") or "(missing)"}`。原始 key 只由 r
 
 本轮目标：
 {agent["mission"]}
+
+Manager 下一步行动提示：
+{previous_next_action_prompt(agent_id, previous)}
 
 强制流程：
 1. 读取人格文档列出的 docs/dev 路线和当前仓库代码。
@@ -716,7 +743,7 @@ def prepare_worktree(root: Path, agent_id: str, agent: dict[str, Any], dry_run: 
     }
 
 
-def write_personas(root: Path, agent_id: str, agent: dict[str, Any], workdir: Path, key_assignment: dict[str, Any]) -> dict[str, str]:
+def write_personas(root: Path, agent_id: str, agent: dict[str, Any], workdir: Path, key_assignment: dict[str, Any], previous: dict[str, Any]) -> dict[str, str]:
     persona_dir = root / ".agents" / "personas"
     prompt_dir = root / ".agents" / "agent-prompts"
     workspace_dir = root / ".agents" / "workspaces" / agent_id
@@ -725,7 +752,7 @@ def write_personas(root: Path, agent_id: str, agent: dict[str, Any], workdir: Pa
     readme_path = workspace_dir / "README.md"
     key_alias = str(key_assignment.get("alias") or "")
     atomic_write_text(persona_path, persona_text(agent_id, agent, workdir, key_alias))
-    atomic_write_text(prompt_path, agent_prompt(agent_id, agent, persona_path, workdir, key_assignment))
+    atomic_write_text(prompt_path, agent_prompt(agent_id, agent, persona_path, workdir, key_assignment, previous))
     atomic_write_text(
         readme_path,
         f"""# {agent_id} 工作环境
@@ -1366,7 +1393,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         key_assignment = select_key_alias(agent, keyring)
         worktree = prepare_worktree(root, agent_id, agent, args.dry_run)
         workdir = Path(str(worktree["path"]))
-        paths = write_personas(root, agent_id, agent, workdir, key_assignment) if not args.dry_run else {
+        paths = write_personas(root, agent_id, agent, workdir, key_assignment, previous) if not args.dry_run else {
             "persona": str(root / ".agents" / "personas" / f"{agent_id}.md"),
             "prompt": str(root / ".agents" / "agent-prompts" / f"{agent_id}.md"),
             "workspace": str(root / ".agents" / "workspaces" / agent_id / "README.md"),
