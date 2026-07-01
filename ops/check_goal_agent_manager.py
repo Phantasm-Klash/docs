@@ -383,6 +383,64 @@ def check_project_manager_prompt_sees_global_action_queue() -> None:
     assert "当前没有 manager 写入的结构化下一步行动项" in client_prompt
 
 
+def check_root_dirty_behind_and_resource_actions_route_to_owners() -> None:
+    repos = {
+        "SpellKard": {
+            "repo": "SpellKard",
+            "branch": "main",
+            "head": "1111111",
+            "status": "## main...origin/main [behind 2]",
+            "dirty_count": 7,
+            "dirty": [" M godot/i18n/base.en.json"],
+        },
+        "Gensoulkyo": {
+            "repo": "Gensoulkyo",
+            "branch": "main",
+            "head": "2222222",
+            "status": "## main...origin/main",
+            "dirty_count": 1,
+            "dirty": [" M runtime/httpapi/handler_test.go"],
+        },
+    }
+    repo_state = goal_agent_manager.build_repo_state_risk(repos)
+    resource_risk = {
+        "top_items": [
+            {
+                "agent": "audit-agent",
+                "repo": "docs",
+                "severity": "medium",
+                "action": "压缩报告和日志尾部；只写结构化状态字段、失败命令和关键错误",
+                "reasons": ["recent_log_bytes>=1000000"],
+            }
+        ]
+    }
+
+    actions = goal_agent_manager.build_next_agent_actions(
+        {"items": [], "top_items": [], "merge_ready_items": [], "supersede_groups": []},
+        resource_risk,
+        repo_state,
+        {},
+    )
+
+    categories = {(item["agent"], item["repo"], item["category"]) for item in actions["items"]}
+    assert ("client-agent", "SpellKard", "dirty_worktree") in categories
+    assert ("client-agent", "SpellKard", "local_behind") in categories
+    assert ("nakama-server-agent", "Gensoulkyo", "dirty_worktree") in categories
+    assert ("audit-agent", "docs", "resource_risk") in categories
+    assert actions["by_agent"]["client-agent"] == 2
+    assert actions["by_agent"]["nakama-server-agent"] == 1
+    assert actions["by_agent"]["audit-agent"] == 1
+
+    manager_prompt = goal_agent_manager.previous_next_action_prompt("project-manager-agent", {"next_agent_actions": actions})
+    client_prompt = goal_agent_manager.previous_next_action_prompt("client-agent", {"next_agent_actions": actions})
+    audit_limit = goal_agent_manager.previous_resource_output_limit_prompt("audit-agent", {"next_agent_actions": actions})
+
+    assert "SpellKard" in manager_prompt and "Gensoulkyo" in manager_prompt
+    assert "dirty=7" in client_prompt and "behind=2" in client_prompt
+    assert "Gensoulkyo" not in client_prompt
+    assert "medium 资源风险 repo=docs" in audit_limit
+
+
 def check_resource_output_limit_prompt_follows_agent_scope() -> None:
     previous = {
         "next_agent_actions": {
@@ -578,6 +636,7 @@ def main() -> int:
     check_upstream_gone_status_becomes_repo_and_health_risk()
     check_repo_state_health_actions_are_actionable_chinese()
     check_project_manager_prompt_sees_global_action_queue()
+    check_root_dirty_behind_and_resource_actions_route_to_owners()
     check_resource_output_limit_prompt_follows_agent_scope()
     check_read_only_samples_do_not_persist_authoritative_state()
     check_live_lock_log_is_preferred_over_latest_old_log()
