@@ -1,0 +1,7 @@
+# 2026-07-01 project-manager merge-ready drain
+
+- Merged Gensoulkyo #62 `Resolve room-code settlement business events` after diff review: `room_code` settlement queries now resolve matched room state into the existing match/player/ticket context, while tests keep client-authored result submission and high-frequency battle tick authority forbidden. Merge commit: `d349e42c3e894ef1e3ca12901c63b817590aac81`.
+- Merged PhK-BattleServer #65 `Reject cross-mode Boss result fields` after diff review: world Boss results reject instance-only fields, and instance Boss results reject world persistent HP/damage fields. Merge commit: `8b6cad77cc62ee7b938d7c3feb179eb7ed94ccc3`.
+- Merged SpellKard #50 `Add replay practice validation evidence` after diff review: local replay validation remains local-practice/hash scoped, while online replay, Boss HP, damage, rewards, and settlement remain server-audit/server-authoritative. Merge commit: `a8e276162a8225f8c511eb85a9487f6407d27be1`.
+- Synced clean local `PhK-BattleServer` and `SpellKard` main checkouts by fast-forward after merge. `Gensoulkyo` root checkout remains on legacy branch `agent/gensoulkyo-lobby/20260629-0900` with four dirty callback-gate files; do not use it as baseline, and keep the dirty diff marked superseded by merged main work.
+- Required checks verified before merge from PR evidence and local spot checks: Gensoulkyo `go test ./runtime/... ./cmd/gensoulkyo_nakama` plus protocol audit passed; PhK-BattleServer `battle-server-checks`/auto-merge passed; SpellKard `client-static-audit`/auto-merge passed.
