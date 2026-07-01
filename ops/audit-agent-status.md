@@ -1,7 +1,7 @@
 # audit-agent status
 
-- time=2026-07-01T09:05:33Z checks=py_compile PASS; check_goal_agent_manager PASS; goal_agent_manager dry-run PASS; protocol_audit_check PASS.
-- branch_pr=root repos main clean; open_pr=Gensoulkyo#94 CLEAN checks=2/2 SUCCESS review_gate=protocol_network_security; SpellKard#72 CLEAN checks=2/2 SUCCESS review_gate=protocol_network_security.
-- failure=latest-regression 2026-07-01T09:02:13Z ok=false failed_count=1; failed_command=not expanded under medium resource risk; first_error=none captured in bounded audit sample.
-- risk=agent_health dry-run score=90 healthy; nakama token risk medium last_run_tokens=390112; audit/client/battle medium resource risk; battle managed worktree ahead=1; legacy roster frozen.
-- next=diff-review/merge-or-fix Gensoulkyo#94 and SpellKard#72; battle-server-agent must push ahead commit/open PR; keep audit/client/battle/nakama outputs compact.
+- time=2026-07-01T09:11:38Z checks=py_compile PASS; check_goal_agent_manager PASS; goal_agent_manager dry-run PASS; protocol_audit_check PASS; check_battle_server PASS.
+- branch_pr=root repos main clean/synced; merged=Gensoulkyo#94 at 3423821; SpellKard#72 at 5a6e469; PhK-BattleServer#92 at 6794765; open_pr=none.
+- failure=latest-regression 2026-07-01T09:02:13Z ok=false failed_count=1; failed_command=not expanded under medium resource risk; local_failed_commands=git diff from non-repo root; gh pr diff --stat unsupported.
+- risk=agent_health dry-run score=90 healthy; nakama token risk medium last_run_tokens=390112; audit/client/battle medium resource risk; legacy roster frozen.
+- next=supervisor should retarget agents after merged PRs; keep outputs compact; investigate latest regression failed_count=1 with bounded key-error search only.
