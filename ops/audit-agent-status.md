@@ -1,7 +1,7 @@
 # audit-agent status
 
-- time=2026-07-01T14:22:57Z project=38% agent_health=92/healthy direction=Phase3 server-authoritative loop: protocol freeze, Nakama/Go business core, C++ battle server, PostgreSQL, SpellKard formal UX/CI.
-- checks=py_compile goal_agent_manager/hourly_progress_mail/check_goal_agent_manager PASS; check_goal_agent_manager PASS; goal_agent_manager --dry-run PASS; protocol_audit_check PASS; latest-regression ok=false failed=1.
-- branch_pr=all root repos main clean; open_pr=Gensoulkyo#110 CLEAN checks=2/2 protocol/security review required; PhK-BattleServer#110 CLEAN checks=2/2 protocol/security review required.
-- failures=regression first_error=spellkard-client-ui-headless status=124 empty stdout/stderr sample.
-- next=diff-review/merge Gensoulkyo#110 and PhK-BattleServer#110 after protocol evidence check; client-agent stop high-log expansion and refresh SpellKard UI smoke timeout; keep legacy agents frozen.
+- time=2026-10-07T03:56Z direction=Phase3 server-authoritative loop: protocol freeze, Nakama/Go business core, C++ battle server, PostgreSQL, SpellKard formal UX/CI.
+- checks=py_compile PASS; check_goal_agent_manager PASS; protocol_audit_check PASS; PhK-Protocol check_protocol PASS; latest-regression snapshot PASS but older than this audit.
+- branch_pr=Gensoulkyo/PhK-Protocol/PhK-BattleServer/docs main aligned; open PR PhK-Protocol#7 CLEAN checks PASS; PhK-BattleServer#111 CLEAN checks PASS; SpellKard#81 merged.
+- risks=SpellKard main dirty=17 Laya items; client-agent token usage about 1.09M; managed worktree baseline drift; no current test failure found.
+- next=review/merge #7/#111; client-agent commit-or-explicitly-discard Laya slice; migration planner submit executable specs; keep old agent branches frozen.
