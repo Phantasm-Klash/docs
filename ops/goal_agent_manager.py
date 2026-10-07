@@ -341,6 +341,7 @@ def agent_operating_limits(agent_id: str) -> str:
         ],
         "nakama-server-agent": [
             "- 按 migration_slices/README.md 依赖图的 01 -> 02 顺序实现 Nakama 服务端切片（身份/storage/幂等/RPC），每切片跑 go test -tags nakama ./runtime/... ./cmd/gensoulkyo_nakama。",
+            "- 服务端当前完全缺失「商店/商品」模块：优先按 07-shop-and-catalog.md 新建 shop.catalog/shop.purchase（catalog/purchase 扣费事务、幂等 receipt、HTTP+RPC 双路由），是用户明确点名的功能。",
             "- 新增 Nakama 功能前先处理 Gensoulkyo 根 checkout 的 dirty/ahead/PR 风险，或明确迁移/废弃理由。",
             "- 如果 Gensoulkyo 根 checkout 仍有 dirty 项，本轮第一步必须给出 disposition：吸收到 managed branch、提交/PR、或写明 supersede/废弃依据；未处理前不要开新功能切片。",
             "- 业务服只负责资格、队列、ticket、回调和审计；不得把高频战斗 tick 做成 Go 权威路径。",
@@ -1903,6 +1904,32 @@ def build_next_agent_actions(
                 "summary": nav_priorities.get("summary"),
                 "action": nav_priorities.get("action"),
                 "evidence": nav_priorities.get("evidence"),
+            }
+        )
+
+    # Service-side backlog: the shop module is the largest missing named
+    # feature. Enqueue it each round until runtime/core/shop.go exists, so the
+    # implement agent always has a concrete, verifiable slice.
+    service_agent = agents.get("nakama-server-agent") if isinstance(agents, dict) else None
+    if isinstance(service_agent, dict):
+        items.append(
+            {
+                "agent": "nakama-server-agent",
+                "repo": "Gensoulkyo",
+                "priority": 40,
+                "category": "missing_shop_module",
+                "summary": "Gensoulkyo 缺少商店/商品模块（serverShopCatalog / shop.catalog / shop.purchase）",
+                "action": (
+                    "按 docs/dev/gotouhou/04_server_database_economy/migration_slices/07-shop-and-catalog.md "
+                    "新建 runtime/core/shop.go：ServerShopProduct/ShopCatalogResponse/ShopPurchaseRequest/"
+                    "ShopPurchaseResponse/ShopReceipt，实现 catalog 读取与 purchase（同事务扣费+发货+ledger+幂等 receipt），"
+                    "在 nakamaapi 与 httpapi 双路由注册 shop.catalog/shop.purchase，补单测并跑 "
+                    "go test -tags nakama ./runtime/... ./cmd/gensoulkyo_nakama"
+                ),
+                "evidence": {
+                    "kind": "implementation",
+                    "spec": "docs/dev/gotouhou/04_server_database_economy/migration_slices/07-shop-and-catalog.md",
+                },
             }
         )
 
