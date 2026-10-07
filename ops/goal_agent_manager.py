@@ -60,6 +60,8 @@ AGENTS: dict[str, dict[str, Any]] = {
             "docs/dev/gotouhou/05_content_assets_ui/ui_screens.md",
             "docs/dev/gotouhou/08_game_modes/world_boss_mode.md",
             "docs/dev/gotouhou/08_game_modes/instance_boss_mode.md",
+            "docs/dev/gotouhou/04_server_database_economy/nakama_client_business_surface.md",
+            "docs/dev/gotouhou/04_server_database_economy/migration_slices/README.md",
         ),
         "checks": (
             "python3 tools/ci_static_checks.py",
@@ -108,6 +110,8 @@ AGENTS: dict[str, dict[str, Any]] = {
             "docs/dev/gotouhou/04_server_database_economy/server_stack.md",
             "docs/dev/gotouhou/04_server_database_economy/client_server_connection.md",
             "docs/dev/gotouhou/08_game_modes/mode_shared_server_interfaces.md",
+            "docs/dev/gotouhou/04_server_database_economy/nakama_client_business_surface.md",
+            "docs/dev/gotouhou/04_server_database_economy/migration_slices/README.md",
         ),
         "checks": (
             "go test ./runtime/... ./cmd/gensoulkyo_nakama",
@@ -188,7 +192,9 @@ AGENTS: dict[str, dict[str, Any]] = {
             "把客户端、战斗服、Nakama、审计 agent 的下一步任务收敛成可执行小切片，必要时更新 persona/prompt，"
             "推动阶段性 commit、branch/PR、测试、复采样和合并节奏；对低分、dirty、ahead、PR 堆积或长日志 agent 优先止血。"
             "只管理调度、评分、提示词、审计和版本流程，"
-            "不得直接实现客户端/战斗服/Nakama 业务代码。只按 agent 身份管理，不恢复 scope/路径分片概念。"
+            "不得直接实现客户端/战斗服/Nakama 业务代码，也不得自行撰写迁移切片规格"
+            "（切片规格由 nakama-migration-planner-agent 独占产出；PM 只做调度优先级与合并节奏）。"
+            "只按 agent 身份管理，不恢复 scope/路径分片概念。"
         ),
     },
 }
@@ -324,6 +330,7 @@ def agent_operating_limits(agent_id: str) -> str:
     ]
     specific: dict[str, list[str]] = {
         "client-agent": [
+            "- 按 nakama_client_business_surface.md 模块 A/B 先落 NakamaLobbyTransport 与 REST_ROUTES 映射，再按 migration_slices/README.md 接入 inventory/decks/chests 场景；每切片跑 npm run typecheck && npm test。",
             "- 不允许长期停留在 only-local ahead 状态；必须 push/开 PR，或在 final 中写明无法开 PR 的具体原因。",
             "- 若 managed worktree ahead 超过 2 个提交，下一轮首要任务是 push/开 PR/拆小 PR，不能继续堆新功能。",
             "- 优先交付 headless 可验证的弹幕/玩法/协议合同，不把纯渲染失败误判为功能失败。",
@@ -333,6 +340,7 @@ def agent_operating_limits(agent_id: str) -> str:
             "- 不复制长编译日志；`docker-compose` 和 protocol audit 只报告通过/失败摘要与关键错误。",
         ],
         "nakama-server-agent": [
+            "- 按 migration_slices/README.md 依赖图的 01 -> 02 顺序实现 Nakama 服务端切片（身份/storage/幂等/RPC），每切片跑 go test -tags nakama ./runtime/... ./cmd/gensoulkyo_nakama。",
             "- 新增 Nakama 功能前先处理 Gensoulkyo 根 checkout 的 dirty/ahead/PR 风险，或明确迁移/废弃理由。",
             "- 如果 Gensoulkyo 根 checkout 仍有 dirty 项，本轮第一步必须给出 disposition：吸收到 managed branch、提交/PR、或写明 supersede/废弃依据；未处理前不要开新功能切片。",
             "- 业务服只负责资格、队列、ticket、回调和审计；不得把高频战斗 tick 做成 Go 权威路径。",
