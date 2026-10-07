@@ -21,6 +21,36 @@ Nakama 身份与 Go Runtime。这个切片是库存、卡组、匹配和活动�
 | 下游切片 | `02-inventory-decks-and-chests`、`03-matchmaking-rooms-and-lobby`、`06-activity-rewards-and-leaderboards` |
 | 实现归属 | `nakama-server-agent`：认证、RPC、storage、迁移脚本；`client-agent`：session 持久化和启动流程 |
 
+## 可直接开工的交付边界
+
+`nakama-server-agent` 只需要交付以下三组入口，其他切片不得重复实现身份
+映射：
+
+| 入口 | Nakama 面 | 输入类型 | 输出类型 | 成功副作用 |
+| --- | --- | --- | --- | --- |
+| 标准设备认证 | Nakama `authenticateDevice` | `device_id`、`create`、可选 display name | Nakama `Session` | 创建/恢复 Nakama user；写 `player_profile` |
+| `auth.anonymous` | custom RPC，兼容迁移 | `AuthAnonymousRequest` | `AuthSession` 投影 | 幂等建立 `identity_link` 和 profile |
+| `bootstrap` | authenticated custom RPC；可选 WSS `business.event` 只读通知 | `BootstrapRequest{KnownRulesetVersion}` | `BootstrapSnapshot` | 只读聚合；可选刷新 cache，不得发奖/扣费 |
+
+当前可复用的代码边界是
+`Gensoulkyo/runtime/core/service.go` 的 `LoginAnonymous`、`LoginExternal`、
+`Bootstrap`，以及 `Gensoulkyo/runtime/nakamaapi/handler.go` 的 RPC 分发和
+envelope 校验。实现完成后，HTTP fallback 仍可调用同一 core contract，但
+Nakama RPC 必须成为主路径；不要在 `cmd/gensoulkyo_nakama` 重新复制业务规则。
+
+## Nakama 面的精确约束
+
+- 认证使用 Nakama session；`auth.anonymous` 不接受客户端传入 `user_id`、
+  `player_id`、wallet、inventory、deck 或任何资产字段。
+- `player_profile`、`identity_link` 是 Go Runtime 的可写 storage；
+  `player_bootstrap_cache` 只能保存带 `schema_version`、`source_hash` 的可重建
+  摘要。Nakama user id 是所有 collection 的 owner，客户端不得指定 owner。
+- 本切片不调用 Nakama `leaderboard` 写 API。bootstrap 只读取 `06` 切片提供的
+  leaderboard 摘要，读取失败时返回明确的 `read_source`/降级状态，不能伪造空
+  排名。
+- `business.event`/WSS 只传版本或 session 状态通知；不把 bootstrap 大快照
+  当作高频广播，也不把 session token 放进通知 payload。
+
 ## 当前 Gensoulkyo 的岗位
 
 - `LoginAnonymous` 创建用户、session token，以及默认 wallet、inventory、deck、
@@ -111,6 +141,14 @@ custom RPC/WSS 继续验证 `protocol_version`、`seq`、`timestamp`、`nonce`�
 4. 迁移批次记录 `migration_batch_id`、源快照 hash、目标写入版本和校验
    时间。完成后冻结旧身份创建，仅保留只读回填窗口。
 
+迁移批次最小记录固定为：
+`migration_batch_id`、`legacy_user_id`、`nakama_user_id`、
+`device_subject_hash`（可选）、`source_snapshot_hash`、
+`target_profile_version`、`status`、`rejected_reason`、`checked_at`。
+`status` 至少包含 `pending`、`shadow_match`、`active`、`orphan`、
+`rejected`；批次脚本必须支持按 `legacy_user_id` 重跑而不覆盖已 active
+映射。
+
 ## 回滚策略
 
 - 以配置开关选择 `legacy`、`shadow`、`nakama` 三种 bootstrap source。
@@ -131,8 +169,32 @@ custom RPC/WSS 继续验证 `protocol_version`、`seq`、`timestamp`、`nonce`�
   命中缓存路径和 `version_mismatch`。
 - 未认证、过期 session、伪造 user id、缺失/重放 envelope 均被拒绝。
 - bootstrap 读取失败时不产生钱包、宝箱或奖励副作用；审计记录不含 token。
-- 运行 `go test ./runtime/... ./cmd/gensoulkyo_nakama/...`；若 Nakama SDK
-  tag 需要外部依赖，在可用的 Nakama Compose/CI 环境执行同一组测试。
+- 最小本地命令（Gensoulkyo）：
+
+  ```sh
+  cd /root/gotouhou/Gensoulkyo
+  go test ./runtime/nakamaapi ./runtime/core ./cmd/gensoulkyo_nakama
+  ```
+
+- Nakama/PostgreSQL 集成命令（必须使用 `docker-compose`）：
+
+  ```sh
+  cd /root/gotouhou/Gensoulkyo/deployments/nakama
+  ./build-plugin.sh
+  docker-compose up -d
+  docker-compose ps
+  curl -fsS http://127.0.0.1:7350/healthcheck
+  ```
+
+- 协议/网络安全门禁：
+
+  ```sh
+  python3 /root/gotouhou/docs/ops/protocol_audit_check.py
+  ```
+
+- `go test -tags nakama ./cmd/gensoulkyo_nakama ./runtime/...` 和 plugin build
+  必须在能访问 pinned Nakama SDK/pluginbuilder 的环境执行；失败时报告首个
+  依赖错误，不把未构建 tag 当作通过。
 
 ### 客户端
 
@@ -143,9 +205,21 @@ custom RPC/WSS 继续验证 `protocol_version`、`seq`、`timestamp`、`nonce`�
   session 和 bootstrap 派生状态。
 - 用 Nakama HTTPS endpoint 做 live check，验证返回字段可被
   `LobbyClient` 解析；不把 session token 打到 console。
+- 最小客户端命令：
+
+  ```sh
+  cd /root/gotouhou/SpellKard/laya
+  npm test
+  ```
+
+  Godot 入口若本切片触及共享登录投影，再追加：
+
+  ```sh
+  cd /root/gotouhou/SpellKard/godot
+  /root/gotouhou/Godot_v4.7-stable_linux.x86_64 --headless --path . --script ../tools/client_smoke_test.gd
+  ```
 
 ## 明确不在范围内
 
 Steam 购买校验、社交关系、经济写操作、leaderboard 排名写入、房间状态、
 battle ticket、Replay 和奖励结算由其他切片负责。
-
