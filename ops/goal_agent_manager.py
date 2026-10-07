@@ -119,6 +119,31 @@ AGENTS: dict[str, dict[str, Any]] = {
             "大厅/房间状态、结算验签、审计持久化和客户端 RPC/WSS 合同。不得把高频 tick 或客户端提交结果做成 Go 生产权威路径。"
         ),
     },
+    "nakama-migration-planner-agent": {
+        "nickname": "Sakuya",
+        "repo": "docs",
+        "key_aliases": ("gensoulkyo", "manager", "other"),
+        "branch": "agent/nakama-migration-planner/persistent",
+        "summary": "Nakama 迁移分片规划与阶段文档，拆分跨仓迁移切片的规格与验收标准。",
+        "docs": (
+            "docs/dev/progress.md",
+            "docs/dev/gotouhou/00_overview/network_security_and_server_split_plan.md",
+            "docs/dev/gotouhou/04_server_database_economy/server_stack.md",
+            "docs/dev/gotouhou/04_server_database_economy/client_server_connection.md",
+            "docs/dev/gotouhou/08_game_modes/mode_shared_server_interfaces.md",
+        ),
+        "checks": (
+            "python3 docs/ops/goal_agent_manager.py --dry-run --root /root/gotouhou --no-start",
+            "python3 /root/gotouhou/docs/ops/protocol_audit_check.py",
+        ),
+        "mission": (
+            "把 Nakama 迁移需求拆成可并行的迁移切片规格：对每个需要迁移的模块，明确"
+            "当前 Gensoulkyo 自研实现的岗位、目标 Nakama 实现的具体 RPC/storage/leaderboard 面、"
+            "客户端接入点、数据迁移方式、回滚策略和验收测试清单。写清每个切片的输入/输出/依赖。"
+            "本 agent 只做规划与文档，不改代码。所有切片必须可由 nakama-server-agent "
+            "或 client-agent 独立实现并自测。"
+        ),
+    },
     "audit-agent": {
         "nickname": "Keine",
         "repo": "docs",
@@ -169,6 +194,9 @@ AGENTS: dict[str, dict[str, Any]] = {
 }
 
 MANAGED_AGENT_IDS = tuple(AGENTS.keys())
+
+# Planning-only agent: receives a dedicated migration slice each round.
+NAVIGATION_AGENT_ID = "nakama-migration-planner-agent"
 
 
 def utcnow() -> dt.datetime:
@@ -1702,6 +1730,30 @@ def build_agent_resource_risk(
     }
 
 
+def _navigation_slice_priorities(root: Any = None) -> dict[str, Any]:
+    """Return the per-round migration slice spec for the planning agent.
+
+    Kept intentionally tiny so it can run inside build_next_agent_actions()
+    without requiring repo state; the planning agent reads its persona/docs for
+    full context.
+    """
+    return {
+        "priority": 45,
+        "category": "nakama_migration_slice",
+        "summary": "推出 Nakama 迁移切片规格：登录/仓库/卡牌/牌组/宝箱/商店/建房 的可实现规格与验收清单",
+        "action": (
+            "本轮产出 1-2 个迁移切片的可实现规格（不写代码）："
+            "对每个切片写清输入/输出类型、涉及的 Nakama RPC/storage/leaderboard/集合名、"
+            "客户端接入点、数据迁移与回滚策略、验收测试清单（含最小可跑命令），"
+            "并把规格写入 docs/dev/gotouhou/04_server_database_economy/migration_slices/ 下"
+        ),
+        "evidence": {
+            "kind": "planning",
+            "produces": "docs/dev/gotouhou/04_server_database_economy/migration_slices/*.md",
+        },
+    }
+
+
 def build_next_agent_actions(
     pull_request_queue: dict[str, Any],
     resource_risk: dict[str, Any],
@@ -1825,6 +1877,24 @@ def build_next_agent_actions(
                     "recent_log_medium_count": item.get("recent_log_medium_count"),
                     "reasons": item.get("reasons"),
                 },
+            }
+        )
+
+    # Migration planner slice: always enqueued so the planning agent has an
+    # explicit next action each supervisor round. Owner-scoped, does not touch
+    # any existing item.
+    nav_agent = agents.get(NAVIGATION_AGENT_ID) if isinstance(agents, dict) else None
+    if isinstance(nav_agent, dict):
+        nav_priorities = _navigation_slice_priorities(root=None)
+        items.append(
+            {
+                "agent": NAVIGATION_AGENT_ID,
+                "repo": "docs",
+                "priority": nav_priorities.get("priority", 45),
+                "category": "nakama_migration_slice",
+                "summary": nav_priorities.get("summary"),
+                "action": nav_priorities.get("action"),
+                "evidence": nav_priorities.get("evidence"),
             }
         )
 
@@ -2267,6 +2337,7 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             "- nakama-server-agent：优先推进 PVP 匹配队列、资格验证、battle ticket/allocation、Nakama RPC/WSS 合同和 PostgreSQL audit。",
             "- audit-agent：继续用中文审计提交和方向，三小时邮件只保留结论、阻塞和下一步，不再粘贴长日志。",
             "- project-manager-agent：每轮读取 docs/dev、日志、PR、回归和 git 状态，主动推进 dirty/ahead/PR/停滞收敛、提示词和版本流程。",
+            "- nakama-migration-planner-agent：输出登录/仓库/卡牌/牌组/宝箱/商店/建房等切片的目标契约与验收清单，供 nakama-server-agent 与 client-agent 并行实现。",
         ]
     ) + "\n"
 
