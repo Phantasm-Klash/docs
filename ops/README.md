@@ -67,6 +67,14 @@ PRs need review, conflict resolution, tests, or branch-protection handling. PR
 approval/merge should happen only after reading the diff, checking docs/dev
 direction, and running the relevant gates.
 
+For protocol, network, authentication, or security-sensitive PRs, trace each
+service callback from its exposed route to the trusted-origin verifier. Payload
+shape, allocation matching, CORS policy, and a non-empty state hash do not
+authenticate the sender. Require a negative test proving that a request without
+valid service credentials cannot settle a match or mutate authoritative state.
+If a security defect is found after merge, notify the owning agent immediately
+and track a focused follow-up fix; green checks do not close the finding.
+
 The goal manager also writes a structured `pull_request_queue` section into
 `.agents/goal-agent-summary.json`. The brief progress mail prints its open,
 needs-action, ready, per-repository, per-owner-agent, per-action-category,
