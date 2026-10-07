@@ -441,6 +441,40 @@ def check_root_dirty_behind_and_resource_actions_route_to_owners() -> None:
     assert "medium 资源风险 repo=docs" in audit_limit
 
 
+def check_behind_pull_request_requires_branch_update() -> None:
+    queue = goal_agent_manager.build_pull_request_queue(
+        {
+            "docs": {
+                "repo": "docs",
+                "open_count": 1,
+                "items": [
+                    {
+                        "number": 86,
+                        "title": "refresh audit status",
+                        "headRefName": "agent/audit-agent/status-20261007",
+                        "baseRefName": "main",
+                        "mergeStateStatus": "BEHIND",
+                        "isDraft": False,
+                        "url": "https://example.invalid/pull/86",
+                        "statusCheckRollup": [
+                            {"status": "COMPLETED", "conclusion": "SUCCESS"},
+                            {"status": "COMPLETED", "conclusion": "SUCCESS"},
+                        ],
+                    }
+                ],
+            }
+        }
+    )
+
+    item = queue["items"][0]
+    assert item["owner_agent"] == "audit-agent"
+    assert item["action_category"] == "update_branch"
+    assert "rerun checks" in item["action"]
+    assert queue["needs_action_count"] == 1
+    assert queue["ready_count"] == 0
+    assert queue["merge_ready_items"] == []
+
+
 def check_resource_output_limit_prompt_follows_agent_scope() -> None:
     previous = {
         "next_agent_actions": {
@@ -637,6 +671,7 @@ def main() -> int:
     check_repo_state_health_actions_are_actionable_chinese()
     check_project_manager_prompt_sees_global_action_queue()
     check_root_dirty_behind_and_resource_actions_route_to_owners()
+    check_behind_pull_request_requires_branch_update()
     check_resource_output_limit_prompt_follows_agent_scope()
     check_read_only_samples_do_not_persist_authoritative_state()
     check_live_lock_log_is_preferred_over_latest_old_log()
