@@ -15,3 +15,18 @@
 7. **依赖**：前置切片、跨仓依赖、协议冻结要求。
 
 命名：`<序号>-<主题>.md`，例如 `01-login-and-bootstrap.md`。
+
+## 当前切片索引
+
+| 切片 | 可独立实现的职责 | 主要依赖 |
+| --- | --- | --- |
+| `01-auth-and-bootstrap.md` | 账号、Nakama session、profile、bootstrap、版本门禁 | Nakama auth、业务 envelope |
+| `02-inventory-decks-and-chests.md` | wallet、inventory、cards、decks、chests、economy ledger | `01`、卡池/ruleset |
+| `03-matchmaking-rooms-and-lobby.md` | matchmaker、房间、规则快照、lobby WSS | `01`、`02` deck snapshot |
+| `04-battle-allocation-and-ticket.md` | Battle Server registry、allocation、signed ticket | `03`、battle key |
+| `05-settlement-and-replay.md` | signed result、幂等结算、Replay、结算 outbox | `03`、`04`、Battle Server |
+| `06-activity-rewards-and-leaderboards.md` | task/event、leaderboard、claim、奖励 ledger | `02`、`05`、运营配置 |
+
+建议并行边界：`01` 完成身份契约后，`02` 与 `03` 可并行开发；
+`04` 依赖 `03` 的 match roster；`05` 依赖 `04` 的 ticket/allocation；
+`06` 可先实现读模型和 claim，待 `05` outbox 接通后启用结算进度写入。
