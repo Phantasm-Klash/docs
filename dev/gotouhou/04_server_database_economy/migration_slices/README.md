@@ -30,3 +30,4 @@
 建议并行边界：`01` 完成身份契约后，`02` 与 `03` 可并行开发；
 `04` 依赖 `03` 的 match roster；`05` 依赖 `04` 的 ticket/allocation；
 `06` 可先实现读模型和 claim，待 `05` outbox 接通后启用结算进度写入。
+| `07-shop-and-catalog.md` | 商店目录、购买扣费、发货、幂等与 receipt | `01`、`02` economy ledger |
