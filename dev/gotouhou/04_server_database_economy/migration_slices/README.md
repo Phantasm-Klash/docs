@@ -26,8 +26,16 @@
 | `04-battle-allocation-and-ticket.md` | Battle Server registry、allocation、signed ticket | `03`、battle key |
 | `05-settlement-and-replay.md` | signed result、幂等结算、Replay、结算 outbox | `03`、`04`、Battle Server |
 | `06-activity-rewards-and-leaderboards.md` | task/event、leaderboard、claim、奖励 ledger | `02`、`05`、运营配置 |
+| `07-shop-and-catalog.md` | 商店目录、购买扣费、发货、幂等 receipt、legacy HTTP/Nakama RPC 双传输 | `01`、`02` economy ledger |
+| `08-mode-qualification-and-boss-state.md` | 模式资格、模式配置、考证 profile、世界/副本 Boss 业务状态 | `01`、`03`、`05`、PhK-Protocol |
+| `09-admin-config-and-audit.md` | 运营配置、热更新、补偿、封禁与管理审计 | `01`、`02`、`05`、`06`、`08`、内网/VPN |
 
 建议并行边界：`01` 完成身份契约后，`02` 与 `03` 可并行开发；
 `04` 依赖 `03` 的 match roster；`05` 依赖 `04` 的 ticket/allocation；
-`06` 可先实现读模型和 claim，待 `05` outbox 接通后启用结算进度写入。
-| `07-shop-and-catalog.md` | 商店目录、购买扣费、发货、幂等与 receipt | `01`、`02` economy ledger |
+`06` 可先实现读模型和 claim，待 `05` outbox 接通后启用结算进度写入；
+`07` 可在 `02` 的 economy ledger 之后独立实现；`08` 可先实现 `modes.get`、
+配置/资格读模型和迁移 shadow compare，但 `ValidateModeEntry` 要接入 `03`，
+Boss HP/评级写入要等 `05` 的 verified settlement callback；`08` 不阻塞
+Battle Server 的实时 mode action 实现。`09` 可先实现 admin storage、审批、
+审计和 config preview；publish/compensation 的副作用分别等待 `08`/`02` 的
+repository contract，玩家通知可与管理面并行。

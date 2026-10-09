@@ -17,6 +17,27 @@ storage/Go Runtime。钱包、库存、卡组和宝箱必须以服务端写入�
 | 下游切片 | `03-matchmaking-rooms-and-lobby` 使用已校验 deck snapshot；`06` 读取资产并发奖励 |
 | 实现归属 | `nakama-server-agent`：Runtime RPC、storage transaction、掉落/升级校验；`client-agent`：Collection/Deck/Chest 接入 |
 
+## 可直接开工的交付边界
+
+服务端 agent 以 `01` 产出的 Nakama `user_id` 为唯一 owner，交付六个玩家
+RPC 和两个只读配置集合。实现顺序固定为 `inventory.get` ->
+`decks.list/save` -> `cards.upgrade` -> `chests.list/open`，每一步都必须能
+独立回放和对账。
+
+| 入口 | Nakama 面 | 输入类型 | 输出类型 | 写入集合 |
+| --- | --- | --- | --- | --- |
+| `inventory.get` | authenticated custom RPC | `EmptyRequest` | `InventorySnapshot` | 无 |
+| `decks.list` | authenticated custom RPC | `EmptyRequest` | `DeckListResponse` | 无 |
+| `decks.save` | authenticated custom RPC | `SaveDeckRequest` | `SaveDeckResponse` | `player_decks`、`economy_ledger`（仅必要时） |
+| `cards.upgrade` | authenticated custom RPC | `CardUpgradeRequest` | `CardUpgradeResponse` | `player_wallet`、`player_inventory`、`economy_ledger` |
+| `chests.list` | authenticated custom RPC | `EmptyRequest` | `ChestSnapshot` | 无 |
+| `chests.open` | authenticated custom RPC | `ChestOpenRequest` | `ChestOpenResponse` | `player_wallet`、`player_inventory`、`player_chests`、`chest_openings`、`economy_ledger` |
+
+`card_catalog` 与 `chest_pools` 是 Go Runtime 管理的只读 storage；它们不是
+leaderboard，也不接受客户端写入。此切片不调用 Nakama leaderboard write
+API，不能把升级次数、开箱次数或钱包余额写成排行榜分数。`03` 只消费
+`DeckSnapshot` 和 `deck_snapshot_hash`，不得读取客户端本地草稿。
+
 ## 当前 Gensoulkyo 的岗位
 
 - `inventory.get` 返回服务端 inventory/wallet snapshot。
@@ -26,6 +47,13 @@ storage/Go Runtime。钱包、库存、卡组和宝箱必须以服务端写入�
 - `chests.list`、`chests.open` 管理宝箱、钥匙、pity 和掉落。
 - 当前默认数据由 `LoginAnonymous` 初始化；迁移期部分状态仍可能在 core
   内存，不能以客户端 bootstrap 结果作为数据源。
+
+代码对照入口：
+`Gensoulkyo/runtime/core/service.go` 的 `Inventory`、`Decks`、`SaveDeck`、
+`UpgradeCard`、`Chests`、`OpenChest`，以及
+`Gensoulkyo/runtime/nakamaapi/handler.go` 的同名 RPC case。客户端对照入口：
+`SpellKard/laya/src/core/net/lobby_client.ts` 的业务调用、Godot 的
+`gensoulkyo_http_client.gd` 与 `gensoulkyo_api_model.gd` 的请求/响应投影。
 
 ## 目标 Nakama 契约
 
@@ -90,6 +118,13 @@ storage/Go Runtime。钱包、库存、卡组和宝箱必须以服务端写入�
 5. 对进行中的 `chests.open` 只迁移已落账 opening；未完成请求作废并要求
    重新发起，不能重复发放。
 
+迁移记录必须能以 `user_id + migration_batch_id` 查询，并至少保存
+`source_snapshot_hash`、`source_revision`、`target_revision`、
+`catalog_version`、`pool_version`、`deck_snapshot_hash`、
+`last_opening_id`、`status` 和 `rejected_reason`。导入器必须先写
+`player_wallet`/`player_inventory`，再写 `player_decks`；任何 deck 中的
+卡牌数量超过已导入 inventory 时，该用户批次进入 `rejected`，不得部分激活。
+
 ## 回滚策略
 
 - `economy_read_source` 支持 `legacy`、`shadow`、`nakama`；写入切换前先
@@ -115,8 +150,31 @@ storage/Go Runtime。钱包、库存、卡组和宝箱必须以服务端写入�
   `chest_openings`、ledger、inventory 三者可按 opening id 对账。
 - storage 重启/写冲突后可恢复；bootstrap 汇总与细分 RPC 的 revision/hash
   一致；所有 grant 都有审计记录且不含秘密。
-- 运行对应 Go Runtime/unit/storage tests；使用 Nakama `docker-compose`
-  启动 PostgreSQL/Nakama 做一轮真实 conditional-write 与重启测试。
+- 最小本地命令（覆盖 core、Nakama dispatcher 和协议合同）：
+
+  ```sh
+  cd /root/gotouhou/Gensoulkyo
+  go test ./runtime/core ./runtime/nakamaapi ./cmd/gensoulkyo_nakama
+  ```
+
+- Nakama/PostgreSQL conditional-write 验收：
+
+  ```sh
+  cd /root/gotouhou/Gensoulkyo/deployments/nakama
+  ./build-plugin.sh
+  docker-compose up -d
+  docker-compose ps
+  docker-compose exec postgres psql -U postgres -d nakama -c \
+    "select count(*) from storage"
+  ```
+
+  随后用同一 `idempotency_key` 重放 `decks.save`、`cards.upgrade`、
+  `chests.open`，断言余额、revision、ledger 和 opening 只变化一次。
+- 协议门禁：
+
+  ```sh
+  python3 /root/gotouhou/docs/ops/protocol_audit_check.py
+  ```
 
 ### 客户端
 
@@ -127,6 +185,19 @@ storage/Go Runtime。钱包、库存、卡组和宝箱必须以服务端写入�
 - 开箱动画只消费 `grants`，断线重连后按 opening id 查询/恢复，不重新抽取。
 - client build 的 HTTPS live check 覆盖空库存、revision conflict、版本过期、
   网络重试和重新登录后的数据恢复。
+- 最小客户端命令：
+
+  ```sh
+  cd /root/gotouhou/SpellKard/laya
+  npm test
+  ```
+
+  Godot 客户端资产/卡组/宝箱投影验收：
+
+  ```sh
+  cd /root/gotouhou/SpellKard/godot
+  /root/gotouhou/Godot_v4.7-stable_linux.x86_64 --headless --path . --script ../tools/client_smoke_test.gd
+  ```
 
 ## 明确不在范围内
 
@@ -134,3 +205,14 @@ storage/Go Runtime。钱包、库存、卡组和宝箱必须以服务端写入�
 ticket 不在本切片；这些功能必须通过本切片提供的 canonical asset/ledger
 接口接入。
 
+商店边界固定为：本切片只提供 wallet、inventory、catalog、ledger 这些
+可被未来软货币商店消费的基础面；当前 Gensoulkyo 没有 `shop.list` 或
+`shop.purchase` 自研实现，因此本轮不虚构迁移来源。真实货币、Steam
+Inventory、商品价格和运营掉落策略仍属于 `07_steam_closed_layer`，不得由
+`nakama-server-agent` 在本切片落地。
+
+## 实现完成判定
+
+服务端 agent 必须能用 opening/ledger/revision 三个维度解释每一次资产变化，
+并证明客户端无法指定 owner、余额、掉落或最终等级。client agent 必须能在
+断线重试后展示同一 canonical 响应，不重复播放奖励，不用本地草稿进入匹配。
