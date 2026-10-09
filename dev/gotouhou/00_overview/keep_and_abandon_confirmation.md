@@ -4,6 +4,18 @@
 
 本文件确认本次「可交互最低实现（MVP）」重写中，现有代码与设计哪些**保留**、哪些**放弃（推迟到第二阶段）**、哪些**降级**、哪些**重写/新建**。与 `network_security_and_server_split_plan.md` 的迁移清单配套使用；发生冲突时以本文件为准。
 
+## 修订说明（2026-10-07）
+
+以下两条 MVP 验收条款已被后续用户决策取代，记录在此以免误读：
+
+- **「MVP 阶段不引入 Nakama」** → 已取消。用户于 2026-10-07 明确要求将 PostgreSQL 与
+  Nakama 大厅迁移到 gateway 运行，并由 Nakama 纳管 104 上的对战服实例。
+  现行拓扑见 `tech_stack.md` 的「部署拓扑」。Nakama 迁移即第二阶段的起点。
+- **「`PhK-Protocol` 不再向 GitHub 推送」** → 已取消。`PhK-Protocol` 现有 GitHub remote
+  （`Phantasm-Klash/PhK-Protocol`）并已合并 PR #7。
+
+其余条款（不做生产加密、不删除「放弃」清单文件）仍然有效。
+
 ## 决策结论
 
 - 服务端拆分方向不变：**业务/大厅后端 + 独立对局后端 + 共享协议仓**，但 MVP 阶段不引入 Nakama。
