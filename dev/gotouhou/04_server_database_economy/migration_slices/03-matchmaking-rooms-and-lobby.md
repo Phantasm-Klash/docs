@@ -28,6 +28,27 @@ ticket 签名、结算或奖励。
 - 房间快照只显示 user/player、ticket、loadout 和 deck hash，不显示客户端可
   伪造的伤害、分数、奖励、Boss HP 等权威结算字段。
 
+### 当前实现与迁移边界审计
+
+- `CreateRoomRequest` 当前没有服务端接受的 `room_code` 字段，`CreateRoom`
+  忽略客户端 route body 中同名的旧兼容字段并由服务端生成 canonical
+  `room_code`。目标 RPC 不得承诺客户端可以指定房间码；客户端应以响应中的
+  canonical code 为准。
+- `CreateRoom` 对同一用户已有 waiting room 做 retry projection，返回原
+  ticket/room，而不是创建第二个房间；`JoinRoom` 对同一用户重复加入也返回
+  原 ticket。这是当前的隐式幂等行为，迁移到 storage 后必须由
+  `client_request_id`/条件写入显式保留。
+- 当前 `JoinQueue`/`CreateRoom`/`JoinRoom` 都由服务端从
+  `active_deck_id` 或已保存 deck snapshot 重算 loadout、stage 和
+  `deck_snapshot_hash`；客户端提交的最终 stats、人数、seed、奖励和
+  `match_id` 不应成为 Nakama storage 输入。
+- 当前客户端 `lobby_client.ts` 的 `createRoom(roomCode, modeId)` 参数名
+  仍保留旧 UI 输入，但服务端生成 code；迁移客户端必须在创建成功后覆盖
+  本地输入，不能用输入值拼接 `rooms.get`。
+- 当前 Nakama adapter 已把 `rooms.*` 和 `matchmaking.*` dispatch 到 core；
+  持久化 room/ticket/roster 和 Nakama matchmaker 生命周期仍是本切片的
+  迁移工作，不得把现有 in-memory map 当作重启恢复能力。
+
 ## 目标 Nakama 契约
 
 ### RPC/WSS
@@ -39,7 +60,7 @@ ticket 签名、结算或奖励。
 | `matchmaking.join` | `mode_id`、`mode_params`、`active_deck_id`、`client_request_id` | `ticket_id`、queue status、server time | Go Runtime 校验 deck/资格后调用 Nakama matchmaker |
 | `matchmaking.ticket` | `ticket_id` | ticket status、`match_id`、players-ready 状态 | 只读当前用户 ticket |
 | `matchmaking.cancel` | `ticket_id`、幂等键 | cancelled status | 仅未匹配 ticket 可取消 |
-| `rooms.create` | `room_code`、`mode_id`、`active_deck_id` | room snapshot、host ticket | room code 由服务端规范化/冲突检查 |
+| `rooms.create` | `mode_id`、`active_deck_id`、`client_request_id`；旧 `room_code` 字段忽略 | room snapshot、host ticket、服务端生成的 `room_code` | room code 由服务端生成且唯一；不得接受客户端指定的权威 code |
 | `rooms.list` | mode/filter | waiting room summaries | 不泄露未公开字段 |
 | `rooms.get` | `room_code` | room snapshot | 仅返回允许展示的 participant view |
 | `rooms.rules` | `room_code` | protocol/ruleset/mode hash、tick、input delay、ticket TTL、禁止字段 | 版本快照 |
@@ -89,6 +110,10 @@ leaderboard 本切片不写入；匹配评分可作为 Nakama matchmaker propert
 4. 切换时每个 active ticket 写入 `migration_batch_id` 和旧 ticket id，
    保留旧 room code；禁止双系统同时向同一玩家发送 `match_start`。
 
+迁移输入必须明确区分 `requested_room_code`（仅旧客户端展示/审计字段）和
+`canonical_room_code`（服务端生成并用于 storage key）；两者不一致时以
+canonical 值为唯一查找键。
+
 ## 回滚策略
 
 - `lobby_authority` 支持 `legacy`、`shadow`、`nakama`。切换窗口只允许一个
@@ -130,4 +155,3 @@ leaderboard 本切片不写入；匹配评分可作为 Nakama matchmaker propert
 
 C++ 战斗连接、battle allocation/ticket、匹配评分 leaderboard、战斗结算、
 Replay 和活动奖励不由本切片实现。
-
