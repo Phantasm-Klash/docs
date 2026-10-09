@@ -1,19 +1,33 @@
 # Nakama 迁移切片规格
 
-本目录把 Gensoulkyo 当前业务实现迁移到 Nakama Runtime + Nakama
-storage 的工作拆成可独立实现、可回滚的小切片。每个切片必须写明：
+本目录存放把 Gensoulkyo 自研业务面迁移/对接 Nakama 的**可实现切片规格**，由
+`nakama-migration-planner-agent` 输出，供 `nakama-server-agent` 与
+`client-agent` 并行实现。
 
-- RPC/WSS id、输入输出类型、storage collection/key 和 leaderboard；
-- 客户端接入点与兼容期行为；
-- 从当前 Gensoulkyo `userState` 或导出快照迁移到 Nakama 的步骤；
-- 双读、双写、切换和回滚条件；
-- 服务端、客户端、协议审计的最小验收命令。
+每个切片文件必须包含：
 
-切片只规划业务边界，不实现客户端、战斗服或 Nakama 业务代码。高频战斗
-tick、战斗结果签名回调和奖励结算仍由各自 owning agent 负责。
+1. **范围**：本切片覆盖的 RPC / 场景，以及明确不在范围内的部分。
+2. **目标契约**：RPC id、入参/出参 JSON 字段、storage collection/key、leaderboard id、错误码。
+3. **客户端接入点**：客户端模块、方法名、UI 场景、传输选择。
+4. **数据迁移**：从现有 Gensoulkyo 存储到 Nakama storage 的映射与回填方式。
+5. **回滚策略**：如何在不破坏线上数据的前提下回退。
+6. **验收测试**：最小可跑的验证命令与断言清单（服务端 + 客户端）。
+7. **依赖**：前置切片、跨仓依赖、协议冻结要求。
 
-当前顺序：
+命名：`<序号>-<主题>.md`，例如 `01-login-and-bootstrap.md`。
 
-1. `01-login-and-bootstrap.md`：账号/会话映射和 bootstrap 聚合读取。
-2. `02-inventory-and-decks.md`：钱包、卡牌库存、卡组和卡组并发保存。
+## 当前切片索引
 
+| 切片 | 可独立实现的职责 | 主要依赖 |
+| --- | --- | --- |
+| `01-auth-and-bootstrap.md` | 账号、Nakama session、profile、bootstrap、版本门禁 | Nakama auth、业务 envelope |
+| `02-inventory-decks-and-chests.md` | wallet、inventory、cards、decks、chests、economy ledger | `01`、卡池/ruleset |
+| `03-matchmaking-rooms-and-lobby.md` | matchmaker、房间、规则快照、lobby WSS | `01`、`02` deck snapshot |
+| `04-battle-allocation-and-ticket.md` | Battle Server registry、allocation、signed ticket | `03`、battle key |
+| `05-settlement-and-replay.md` | signed result、幂等结算、Replay、结算 outbox | `03`、`04`、Battle Server |
+| `06-activity-rewards-and-leaderboards.md` | task/event、leaderboard、claim、奖励 ledger | `02`、`05`、运营配置 |
+
+建议并行边界：`01` 完成身份契约后，`02` 与 `03` 可并行开发；
+`04` 依赖 `03` 的 match roster；`05` 依赖 `04` 的 ticket/allocation；
+`06` 可先实现读模型和 claim，待 `05` outbox 接通后启用结算进度写入。
+| `07-shop-and-catalog.md` | 商店目录、购买扣费、发货、幂等与 receipt | `01`、`02` economy ledger |

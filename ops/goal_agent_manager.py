@@ -60,6 +60,8 @@ AGENTS: dict[str, dict[str, Any]] = {
             "docs/dev/gotouhou/05_content_assets_ui/ui_screens.md",
             "docs/dev/gotouhou/08_game_modes/world_boss_mode.md",
             "docs/dev/gotouhou/08_game_modes/instance_boss_mode.md",
+            "docs/dev/gotouhou/04_server_database_economy/nakama_client_business_surface.md",
+            "docs/dev/gotouhou/04_server_database_economy/migration_slices/README.md",
         ),
         "checks": (
             "python3 tools/ci_static_checks.py",
@@ -108,6 +110,8 @@ AGENTS: dict[str, dict[str, Any]] = {
             "docs/dev/gotouhou/04_server_database_economy/server_stack.md",
             "docs/dev/gotouhou/04_server_database_economy/client_server_connection.md",
             "docs/dev/gotouhou/08_game_modes/mode_shared_server_interfaces.md",
+            "docs/dev/gotouhou/04_server_database_economy/nakama_client_business_surface.md",
+            "docs/dev/gotouhou/04_server_database_economy/migration_slices/README.md",
         ),
         "checks": (
             "go test ./runtime/... ./cmd/gensoulkyo_nakama",
@@ -117,6 +121,31 @@ AGENTS: dict[str, dict[str, Any]] = {
         "mission": (
             "根据 docs 与协议规则完善 Nakama 服务端功能，包括 PVP 匹配队列、对战资格验证、battle allocation/ticket、"
             "大厅/房间状态、结算验签、审计持久化和客户端 RPC/WSS 合同。不得把高频 tick 或客户端提交结果做成 Go 生产权威路径。"
+        ),
+    },
+    "nakama-migration-planner-agent": {
+        "nickname": "Sakuya",
+        "repo": "docs",
+        "key_aliases": ("gensoulkyo", "manager", "other"),
+        "branch": "agent/nakama-migration-planner/persistent",
+        "summary": "Nakama 迁移分片规划与阶段文档，拆分跨仓迁移切片的规格与验收标准。",
+        "docs": (
+            "docs/dev/progress.md",
+            "docs/dev/gotouhou/00_overview/network_security_and_server_split_plan.md",
+            "docs/dev/gotouhou/04_server_database_economy/server_stack.md",
+            "docs/dev/gotouhou/04_server_database_economy/client_server_connection.md",
+            "docs/dev/gotouhou/08_game_modes/mode_shared_server_interfaces.md",
+        ),
+        "checks": (
+            "python3 docs/ops/goal_agent_manager.py --dry-run --root /root/gotouhou --no-start",
+            "python3 /root/gotouhou/docs/ops/protocol_audit_check.py",
+        ),
+        "mission": (
+            "把 Nakama 迁移需求拆成可并行的迁移切片规格：对每个需要迁移的模块，明确"
+            "当前 Gensoulkyo 自研实现的岗位、目标 Nakama 实现的具体 RPC/storage/leaderboard 面、"
+            "客户端接入点、数据迁移方式、回滚策略和验收测试清单。写清每个切片的输入/输出/依赖。"
+            "本 agent 只做规划与文档，不改代码。所有切片必须可由 nakama-server-agent "
+            "或 client-agent 独立实现并自测。"
         ),
     },
     "audit-agent": {
@@ -163,12 +192,17 @@ AGENTS: dict[str, dict[str, Any]] = {
             "把客户端、战斗服、Nakama、审计 agent 的下一步任务收敛成可执行小切片，必要时更新 persona/prompt，"
             "推动阶段性 commit、branch/PR、测试、复采样和合并节奏；对低分、dirty、ahead、PR 堆积或长日志 agent 优先止血。"
             "只管理调度、评分、提示词、审计和版本流程，"
-            "不得直接实现客户端/战斗服/Nakama 业务代码。只按 agent 身份管理，不恢复 scope/路径分片概念。"
+            "不得直接实现客户端/战斗服/Nakama 业务代码，也不得自行撰写迁移切片规格"
+            "（切片规格由 nakama-migration-planner-agent 独占产出；PM 只做调度优先级与合并节奏）。"
+            "只按 agent 身份管理，不恢复 scope/路径分片概念。"
         ),
     },
 }
 
 MANAGED_AGENT_IDS = tuple(AGENTS.keys())
+
+# Planning-only agent: receives a dedicated migration slice each round.
+NAVIGATION_AGENT_ID = "nakama-migration-planner-agent"
 
 
 def utcnow() -> dt.datetime:
@@ -296,6 +330,7 @@ def agent_operating_limits(agent_id: str) -> str:
     ]
     specific: dict[str, list[str]] = {
         "client-agent": [
+            "- 按 nakama_client_business_surface.md 模块 A/B 先落 NakamaLobbyTransport 与 REST_ROUTES 映射，再按 migration_slices/README.md 接入 inventory/decks/chests 场景；每切片跑 npm run typecheck && npm test。",
             "- 不允许长期停留在 only-local ahead 状态；必须 push/开 PR，或在 final 中写明无法开 PR 的具体原因。",
             "- 若 managed worktree ahead 超过 2 个提交，下一轮首要任务是 push/开 PR/拆小 PR，不能继续堆新功能。",
             "- 优先交付 headless 可验证的弹幕/玩法/协议合同，不把纯渲染失败误判为功能失败。",
@@ -305,6 +340,8 @@ def agent_operating_limits(agent_id: str) -> str:
             "- 不复制长编译日志；`docker-compose` 和 protocol audit 只报告通过/失败摘要与关键错误。",
         ],
         "nakama-server-agent": [
+            "- 按 migration_slices/README.md 依赖图的 01 -> 02 顺序实现 Nakama 服务端切片（身份/storage/幂等/RPC），每切片跑 go test -tags nakama ./runtime/... ./cmd/gensoulkyo_nakama。",
+            "- 服务端当前完全缺失「商店/商品」模块：优先按 07-shop-and-catalog.md 新建 shop.catalog/shop.purchase（catalog/purchase 扣费事务、幂等 receipt、HTTP+RPC 双路由），是用户明确点名的功能。",
             "- 新增 Nakama 功能前先处理 Gensoulkyo 根 checkout 的 dirty/ahead/PR 风险，或明确迁移/废弃理由。",
             "- 如果 Gensoulkyo 根 checkout 仍有 dirty 项，本轮第一步必须给出 disposition：吸收到 managed branch、提交/PR、或写明 supersede/废弃依据；未处理前不要开新功能切片。",
             "- 业务服只负责资格、队列、ticket、回调和审计；不得把高频战斗 tick 做成 Go 权威路径。",
@@ -1702,6 +1739,30 @@ def build_agent_resource_risk(
     }
 
 
+def _navigation_slice_priorities(root: Any = None) -> dict[str, Any]:
+    """Return the per-round migration slice spec for the planning agent.
+
+    Kept intentionally tiny so it can run inside build_next_agent_actions()
+    without requiring repo state; the planning agent reads its persona/docs for
+    full context.
+    """
+    return {
+        "priority": 45,
+        "category": "nakama_migration_slice",
+        "summary": "推出 Nakama 迁移切片规格：登录/仓库/卡牌/牌组/宝箱/商店/建房 的可实现规格与验收清单",
+        "action": (
+            "本轮产出 1-2 个迁移切片的可实现规格（不写代码）："
+            "对每个切片写清输入/输出类型、涉及的 Nakama RPC/storage/leaderboard/集合名、"
+            "客户端接入点、数据迁移与回滚策略、验收测试清单（含最小可跑命令），"
+            "并把规格写入 docs/dev/gotouhou/04_server_database_economy/migration_slices/ 下"
+        ),
+        "evidence": {
+            "kind": "planning",
+            "produces": "docs/dev/gotouhou/04_server_database_economy/migration_slices/*.md",
+        },
+    }
+
+
 def build_next_agent_actions(
     pull_request_queue: dict[str, Any],
     resource_risk: dict[str, Any],
@@ -1824,6 +1885,65 @@ def build_next_agent_actions(
                     "recent_log_high_count": item.get("recent_log_high_count"),
                     "recent_log_medium_count": item.get("recent_log_medium_count"),
                     "reasons": item.get("reasons"),
+                },
+            }
+        )
+
+    # Migration planner slice: always enqueued so the planning agent has an
+    # explicit next action each supervisor round. Owner-scoped, does not touch
+    # any existing item.
+    nav_agent = agents.get(NAVIGATION_AGENT_ID) if isinstance(agents, dict) else None
+    if isinstance(nav_agent, dict):
+        nav_priorities = _navigation_slice_priorities(root=None)
+        items.append(
+            {
+                "agent": NAVIGATION_AGENT_ID,
+                "repo": "docs",
+                "priority": nav_priorities.get("priority", 45),
+                "category": "nakama_migration_slice",
+                "summary": nav_priorities.get("summary"),
+                "action": nav_priorities.get("action"),
+                "evidence": nav_priorities.get("evidence"),
+            }
+        )
+
+    # Service-side backlog: keep the shop slice actionable until its managed
+    # worktree or an open delivery PR proves that implementation has started.
+    # Once work is in flight, the normal dirty/PR actions above are the only
+    # useful routing; repeating the feature request causes duplicate branches.
+    service_agent = agents.get("nakama-server-agent") if isinstance(agents, dict) else None
+    shop_in_flight = False
+    for raw_pr in pull_request_queue.get("items", []):
+        pr = raw_pr if isinstance(raw_pr, dict) else {}
+        if str(pr.get("repo") or "") != "Gensoulkyo":
+            continue
+        if str(pr.get("owner_agent") or "") != "nakama-server-agent":
+            continue
+        haystack = f"{pr.get('title', '')} {pr.get('head', '')}".lower()
+        if "shop" in haystack or "catalog" in haystack:
+            shop_in_flight = True
+            break
+    if isinstance(service_agent, dict):
+        workdir = Path(str(service_agent.get("workdir") or ""))
+        shop_in_flight = shop_in_flight or (workdir / "runtime/core/shop.go").is_file()
+    if isinstance(service_agent, dict) and not shop_in_flight:
+        items.append(
+            {
+                "agent": "nakama-server-agent",
+                "repo": "Gensoulkyo",
+                "priority": 40,
+                "category": "missing_shop_module",
+                "summary": "Gensoulkyo 缺少商店/商品模块（serverShopCatalog / shop.catalog / shop.purchase）",
+                "action": (
+                    "按 docs/dev/gotouhou/04_server_database_economy/migration_slices/07-shop-and-catalog.md "
+                    "新建 runtime/core/shop.go：ServerShopProduct/ShopCatalogResponse/ShopPurchaseRequest/"
+                    "ShopPurchaseResponse/ShopReceipt，实现 catalog 读取与 purchase（同事务扣费+发货+ledger+幂等 receipt），"
+                    "在 nakamaapi 与 httpapi 双路由注册 shop.catalog/shop.purchase，补单测并跑 "
+                    "go test -tags nakama ./runtime/... ./cmd/gensoulkyo_nakama"
+                ),
+                "evidence": {
+                    "kind": "implementation",
+                    "spec": "docs/dev/gotouhou/04_server_database_economy/migration_slices/07-shop-and-catalog.md",
                 },
             }
         )
@@ -2267,6 +2387,7 @@ def build_audit_report(summary: dict[str, Any]) -> str:
             "- nakama-server-agent：优先推进 PVP 匹配队列、资格验证、battle ticket/allocation、Nakama RPC/WSS 合同和 PostgreSQL audit。",
             "- audit-agent：继续用中文审计提交和方向，三小时邮件只保留结论、阻塞和下一步，不再粘贴长日志。",
             "- project-manager-agent：每轮读取 docs/dev、日志、PR、回归和 git 状态，主动推进 dirty/ahead/PR/停滞收敛、提示词和版本流程。",
+            "- nakama-migration-planner-agent：输出登录/仓库/卡牌/牌组/宝箱/商店/建房等切片的目标契约与验收清单，供 nakama-server-agent 与 client-agent 并行实现。",
         ]
     ) + "\n"
 

@@ -383,6 +383,39 @@ def check_project_manager_prompt_sees_global_action_queue() -> None:
     assert "当前没有 manager 写入的结构化下一步行动项" in client_prompt
 
 
+def check_shop_backlog_does_not_duplicate_in_flight_delivery() -> None:
+    agents = {
+        "nakama-server-agent": {
+            "workdir": "/tmp/manager-check-without-shop-worktree",
+        }
+    }
+    queue = {
+        "items": [
+            {
+                "repo": "Gensoulkyo",
+                "owner_agent": "nakama-server-agent",
+                "title": "feat(nakama): add shop catalog and purchase RPCs",
+                "head": "agent/nakama-server-agent/shop-catalog",
+            }
+        ]
+    }
+    actions = goal_agent_manager.build_next_agent_actions(
+        queue,
+        {"top_items": []},
+        {"top_items": []},
+        agents,
+    )
+    assert not any(item["category"] == "missing_shop_module" for item in actions["items"])
+
+    empty_actions = goal_agent_manager.build_next_agent_actions(
+        {"items": []},
+        {"top_items": []},
+        {"top_items": []},
+        agents,
+    )
+    assert any(item["category"] == "missing_shop_module" for item in empty_actions["items"])
+
+
 def check_root_dirty_behind_and_resource_actions_route_to_owners() -> None:
     repos = {
         "SpellKard": {
