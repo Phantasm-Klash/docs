@@ -426,10 +426,11 @@ ticket 不在本切片；这些功能必须通过本切片提供的 canonical as
 接口接入。
 
 商店边界固定为：本切片只提供 wallet、inventory、catalog、ledger 这些
-可被未来软货币商店消费的基础面；当前 Gensoulkyo 没有 `shop.list` 或
-`shop.purchase` 自研实现，因此本轮不虚构迁移来源。真实货币、Steam
-Inventory、商品价格和运营掉落策略仍属于 `07_steam_closed_layer`，不得由
-`nakama-server-agent` 在本切片落地。
+由 `07-shop-and-catalog.md` 消费的基础面；Gensoulkyo 当前同时保留
+`shop.catalog`/`shop.purchase` 的新 product API 和旧 `/v1/shop` item API，
+因此商店迁移来源、receipt、幂等和 authority switch 统一由 `07` 处理。
+真实货币、Steam Inventory、商品价格和运营掉落策略仍属于
+`07_steam_closed_layer`，不得由 `nakama-server-agent` 在本切片落地。
 
 ## 实现完成判定
 
