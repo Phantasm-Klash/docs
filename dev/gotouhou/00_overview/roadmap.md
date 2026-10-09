@@ -1,14 +1,14 @@
 # 路线图
 
-状态更新时间：2026-06-26
+状态更新时间：2026-10-09
 
 ## 当前阶段判断
 
 按最早的 1-8 阶段表，项目已经不在“仓库初始化/最小客户端原型”阶段。结合 `SpellKard` 和 `Gensoulkyo` 的现有代码，当前真实状态是：
 
 - 阶段 1 已完成：文档目录、边界、玩法与技术规格已经建立。
-- 阶段 2 已基本成型：Godot 本地 STG 厚原型具备移动、低速、判定、擦弹、Bomb、计分、Replay、练习关卡、机体、12 类弹幕数学基底和自动化烟测。
-- 当前主线应视为阶段 3：联机权威对局和服务端拆分收敛期。`Gensoulkyo` 已有 Go 标准库 HTTP 内存 MVP，`SpellKard` 已有 HTTP 契约适配和 Godot `HTTPRequest` 包装；接下来保留 Nakama 作为业务服务器核心，并把强实时 PVP/Boss 战斗迁移到 C++ Battle Server、KCP、protobuf、ECDHE 和 ChaCha20-Poly1305。
+- 阶段 2 已基本成型：`SpellKard/laya/` 的 LayaAir 3（TypeScript）客户端具备移动、低速、判定、擦弹、Bomb、计分、Replay、练习关卡、机体、弹幕数学基底和自动化测试；旧 Godot 目录仅保留移植参考。
+- 当前主线应视为阶段 3：联机权威对局和服务端拆分收敛期。`Gensoulkyo` 已有 Go/Nakama 业务合同与 HTTP fallback，`SpellKard` 已有 LayaAir 网络适配；接下来保留 Nakama 作为业务服务器核心，并把强实时 PVP/Boss 战斗迁移到 C++ Battle Server、KCP、protobuf、ECDHE 和 ChaCha20-Poly1305。
 - 阶段 4、阶段 5、阶段 6、阶段 8 已有 MVP 切片并行推进：卡组/卡牌、服务端经济、i18n/主题/测试、多模式 Boss/考证/大逃杀表面均已启动。
 - 阶段 7 未开始，仍应等开源 MVP 稳定、资产授权和商业边界再次复核后再进入。
 
@@ -28,9 +28,9 @@
 
 ## 阶段 2：单机 STG 核心
 
-目标：在 Godot 中完成可玩的本地弹幕原型。
+目标：在 LayaAir 3 中完成可玩的本地弹幕原型；Godot 原型只作为移植参考。
 
-实际状态：基本成型，处于手感、视觉和性能验收收尾。`SpellKard` 已实现固定 tick 移动、低速、判定点、擦弹、命中、Bomb/deathbomb、射击、计分、Replay 保存/读取/播放、练习关卡、Pattern Lab、4 个机体和 12 类弹幕基底。
+实际状态：基本成型，处于手感、视觉和性能验收收尾。`SpellKard/laya/` 已实现固定 tick 移动、低速、判定点、擦弹、命中、Bomb/deathbomb、射击、计分、Replay 保存/读取/播放、练习关卡、Pattern Lab、机体和弹幕基底。
 
 验收：
 
@@ -110,7 +110,7 @@
 
 目标：完成素材管线、UI、延迟测试、封测和监控。
 
-实际状态：进行中。客户端已有资产 manifest、主题 manifest、i18n、可访问性、输入配置、音频设置模型、平衡模拟、延迟矩阵、Godot headless 检查和 Gensoulkyo live HTTP 检查；生产素材、正式 UI、音频播放、CI 和部署监控仍未完成。
+实际状态：进行中。客户端已有资产 manifest、主题 manifest、i18n、可访问性、输入配置、音频设置模型、平衡模拟、延迟矩阵、LayaAir/TypeScript 检查和 Gensoulkyo live HTTP 检查；生产素材、正式 UI、音频播放、CI 和部署监控仍未完成。
 
 验收：
 
@@ -122,7 +122,7 @@
 
 剩余工作：
 
-- 建立 CI：Godot headless、Go tests、license manifest、文档链接和格式检查。
+- 建立 CI：LayaAir/TypeScript 构建与测试、Go tests、license manifest、文档链接和格式检查。
 - 用正式 UI 场景替换调试覆盖层，保证键盘/手柄可完整完成登录、匹配、对局、卡组、宝箱、回放和设置流程。
 - 补生产可用美术、音频、字体和授权记录，再做封闭测试计划。
 
