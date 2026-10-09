@@ -2,365 +2,447 @@
 
 ## 目标和边界
 
-把 Gensoulkyo 当前内存商城迁移为 Nakama/Go Runtime 的只读商品目录和
-服务端权威购买写入。完成标准是：同一商品定义、价格、发货、钱包扣减和
-幂等 receipt 在 Nakama RPC、旧 HTTP fallback 和客户端投影中保持一致。
+把 Gensoulkyo 当前的内存商品目录和购买逻辑迁移为 Nakama/Go Runtime
+的服务端权威商品目录、扣款、发货、幂等 receipt 和经济账本。完成标准
+是：Nakama 主面、旧 HTTP fallback 和客户端最终显示同一套 server-owned
+商品、价格、grant、钱包和 receipt。
 
 本切片覆盖：
 
-- 商品目录读取；
-- 购买意图校验、扣款、发货、ledger 和 receipt；
-- 迁移已有用户的钱包、商城已购次数和商城赠品；
-- LayaAir 客户端的 RPC/HTTP 传输切换；
-- 购买幂等、并发写冲突和回滚开关。
+- 商品目录读取和固定 `catalog_version`；
+- `product_id`/`quantity`/`nonce` 购买意图校验；
+- wallet 扣减、card/chest/currency grant、receipt、ledger 和条件写；
+- 旧内存 `ShopPurchased`/`ShopInventory` 与新 product API 的迁移对账；
+- LayaAir Nakama/HTTP 双传输、幂等重试和回滚开关。
 
-本切片不覆盖：
+明确不在范围：
 
-- 宝箱随机掉落和 pity（`02-inventory-decks-and-chests.md`）；
-- 活动/签到奖励（`06-activity-rewards-and-leaderboards.md`）；
-- 战斗结算发奖（`05-settlement-and-replay.md`）；
-- Steam 商品、真实货币、市场交易和闭源运营配置；
-- 商店 leaderboard。商店购买不改变排名；本切片**不创建、不写入**
-  Nakama leaderboard。
+- 卡牌定义、卡牌升级、宝箱随机掉落和 pity（`02`）；
+- 活动/签到奖励（`06`）；
+- 战斗结算发奖（`05`）；
+- Steam Inventory、真实货币、市场交易和闭源商品配置；
+- 商店 leaderboard。购买不产生排名，本切片不注册或写入 Nakama
+  leaderboard。
 
-## 当前实现审计
-
-### Gensoulkyo 当前岗位
-
-当前实现位于 `Gensoulkyo/runtime/core/service.go` 和
-`runtime/httpapi/handler.go`：
-
-- `Service.Shop(sessionToken)` 从静态 `shopItemCatalog()` 返回目录、钱包、
-  `ShopPurchased` 计数和 `purchasable`；
-- `Service.PurchaseShopItem(sessionToken, ShopPurchaseRequest)` 在进程内锁下
-  校验商品、扣 `user.Wallet`，增加 `user.ShopInventory` 并增加
-  `user.ShopPurchased`；
-- `GET /v1/shop` 调用 `Shop`；
-- `POST /v1/shop/purchase` 调用 `PurchaseShopItem`；
-- 当前商品固定为 `stamina_potion`（300 gold，发放 1）、
-  `gacha_ticket`（500 gold，发放 1）和
-  `card_dust_bundle`（200 gold，发放 50 `card_dust`），均为无限库存
-  (`stock = -1`)；
-- 当前 `ShopPurchased` 和 `ShopInventory` 属于用户内存状态，没有独立
-  purchase receipt、economy ledger、条件写入版本或重启后恢复保证；
-- 当前请求没有幂等键。`count <= 0` 会被服务端归一化为 1，且当前没有
-  单次数量上限；Nakama 目标必须改为显式拒绝非法数量，避免重试/边界输入
-  产生歧义；
-- 现有客户端操作名是 `shop.get` / `shop.purchase`，不是
-  `shop.catalog`。迁移期保留这两个操作名，避免客户端同时发生命名和传输
-  变更；
-- 现有客户端 HTTP 合同为 `GET /v1/shop` 和
-  `POST /v1/shop/purchase`。旧 HTTP fallback 在切换窗口继续保留，但不能
-  与 Nakama 同时成为同一用户的写权威。
-
-### 必须保留的行为不变量
-
-1. 商品 id、价格货币、价格金额和发放物只能由服务端目录决定；客户端提交的
-   价格、grant、库存和余额字段必须忽略或拒绝。
-2. 钱包扣减、商品发放、ledger 和 receipt 必须以同一幂等购买为单位提交；
-   任一部分失败都不能留下半笔购买。
-3. 相同用户、相同 `idempotency_key` 和相同请求 hash 的重试只返回原 receipt，
-   不得再次扣款或发货；相同 key 但请求 hash 不同必须返回
-   `idempotency_conflict`。
-4. 购买结果中的 wallet/inventory 是服务端提交后的完整投影；客户端不能把
-   本地预扣或本地库存当作成功依据。
-5. 目录版本在购买请求和 receipt 中固定；目录切换不改变已提交 receipt，
-   旧版本商品只允许按发布策略继续完成或明确返回
-   `catalog_version_mismatch`。
-6. 商店操作不进入 battle transport、不产生 leaderboard 分数，也不直接
-   调用 Steam/商业库存。
-
-## 输入、输出和依赖
+## 输入、输出与依赖
 
 | 项目 | 规格 |
 | --- | --- |
-| 输入 | Nakama authenticated `user_id`、`item_id`、正整数 `count`、`catalog_version`（购买时）、business envelope、`idempotency_key` |
-| 输出 | `ShopView`/目录快照；`ShopPurchaseView` 加 `receipt_id`、`ledger_id`、`catalog_version`、完整 wallet/inventory |
-| 当前输入兼容 | 旧 HTTP body `{ "item_id": "...", "count": 1 }`；旧 HTTP 继续由 fallback 接收，Nakama RPC 使用 envelope body |
-| 前置依赖 | `01-auth-and-bootstrap` 的 Nakama user/identity；`02-inventory-decks-and-chests` 的 wallet、inventory、economy ledger conditional write |
-| 可并行依赖 | 可与 `03-matchmaking-rooms-and-lobby`、`06-activity-rewards-and-leaderboards` 并行；不得改写对方的 match/reward/leaderboard collection |
-| 实现归属 | `nakama-server-agent`：RPC、storage、事务/幂等、目录发布和迁移工具；`client-agent`：Laya lobby/shop 投影和错误/重试状态 |
-| 下游输出 | Collection/Shop 页面使用 canonical wallet/inventory；bootstrap 只读摘要，不复制购买权威状态 |
+| Nakama 输入 | authenticated `ctx.UserID`、`product_id`、正整数 `quantity`、业务幂等 `nonce`、可选 `catalog_version`、business envelope |
+| legacy 输入 | 旧 HTTP `item_id`、`count`；无可依赖的幂等 receipt，只能保留为受限 fallback |
+| Nakama 输出 | `ShopCatalogResponse`、`ShopPurchaseResponse`、嵌套 `ShopReceipt`、`GrantEntry`、canonical wallet/inventory、ledger/operation id |
+| `nakama-server-agent` 输入 | `01` 的 Nakama owner、`02` 的 `player_wallet`/`player_inventory`/`economy_ledger` contract、当前目录 seed |
+| `nakama-server-agent` 输出 | `shop.catalog`/`shop.purchase` RPC、catalog storage、atomic purchase write、legacy importer、authority switch |
+| `client-agent` 输入 | Nakama HTTPS RPC endpoint、HTTP fallback、商品/receipt JSON contract |
+| `client-agent` 输出 | `LobbyClient` 商品/购买 projection、稳定 nonce、Shop scene 错误/重试状态和 live check |
+| 前置依赖 | `01-auth-and-bootstrap` 的 owner/session；`02-inventory-decks-and-chests` 的 asset revision、wallet、inventory、ledger 条件写 |
+| 可并行 | 可与 `03`、`06` 并行；不得写入对方的 room/match/reward/leaderboard collection |
+| 下游 | Collection/Shop 页面读取 canonical wallet/inventory；bootstrap 只聚合摘要，不复制购买权威 |
+
+购买请求中客户端不得提交或影响 `cost_kind`、`cost_amount`、grant、wallet、
+inventory、stock、rarity、server seed、receipt、ledger、user/owner id。服务端
+只接受商品选择和数量。
+
+## 当前 Gensoulkyo 的岗位
+
+### 两套现状必须分开
+
+当前仓库同时保留了新 product API 和旧 item API，迁移时不能把它们描述成
+同一份数据：
+
+1. `Gensoulkyo/runtime/core/shop.go`
+   - `ShopCatalog(sessionToken)` 返回 `ShopCatalogResponse`；
+   - `PurchaseShopProduct(sessionToken, ShopPurchaseRequest)` 接受
+     `product_id`、`quantity`、`nonce`，在进程锁内扣钱包并发货；
+   - `serverShopCatalog` 当前有 6 个商品；
+   - `Service.shopPurchases` 按 `user_id + nonce` 保存 request hash 和原响应，
+     `shopPurchaseLimits` 保存按日计数；
+   - receipt 当前嵌套在 `ShopPurchaseResponse.receipt`，尚无持久化
+     `economy_ledger`、`ledger_id` 或重启恢复。
+2. `Gensoulkyo/runtime/core/service.go` 的 legacy `Shop`/
+   `PurchaseShopItem`
+   - `GET /v1/shop` 返回 `ShopView{currency,wallet,items}`；
+   - `POST /v1/shop/purchase` 在 body 是 `item_id/count` 时走旧路径；
+   - 旧 `ShopPurchased`/`ShopInventory` 仍是 user memory state，没有 receipt
+     和条件写；
+   - 旧路径的 `count <= 0` 兼容归一为 1，不能作为 Nakama 主写规则。
+
+### 当前路由和 adapter
+
+- `Gensoulkyo/runtime/nakamaapi/handler.go` 已登记
+  `shop.catalog`、`shop.purchase`；authenticated Nakama RPC 通过
+  `requestBody` 解包业务 envelope 后调用新 product API。
+- `Gensoulkyo/runtime/httpapi/handler.go` 已提供
+  `GET /v1/shop/catalog`、`POST /v1/shop/purchase`。purchase handler
+  根据 `product_id/quantity/nonce` 或 `item_id/count` 选择新/旧 contract；
+  该路由切换窗口只能有一个写 authority。
+- `SpellKard/laya/src/core/net/lobby_client.ts` 当前仍以 `shop.get`、
+  `item_id/count` 解析旧 `ShopView`/`ShopPurchaseView`；这不是 Nakama 主路径，
+  client-agent 必须新增 `shop.catalog` product decoder，同时保留旧 alias
+  作为 fallback。
+
+### 必须保留的行为不变量
+
+1. 商品 id、价格货币、金额、stock、rarity 和 grant 只来自当前服务端
+   `shop_catalog`；客户端伪造价格/grant 必须拒绝或忽略。
+2. wallet、inventory、purchase receipt、ledger 和 asset revision 必须在同一
+   购买 operation 内提交；不能出现扣款成功而发货/receipt 缺失。
+3. 同一 user、同一 `nonce`、同一请求 hash 的重试只返回原 receipt，不重复扣款；
+   相同 nonce 用于不同 product/quantity 返回 `idempotency_conflict`。
+4. 业务 envelope 的 transport nonce 与购买 `nonce` 是两个字段；网络重试复用
+   购买 nonce，不能拿 envelope nonce 作为业务 receipt key。
+5. 目录切换不改变已提交 receipt；过期 catalog 只能按发布策略完成或返回
+   `catalog_version_mismatch`。
+6. 购买结果中的 wallet/inventory 必须是提交后的 canonical projection；
+   客户端本地预扣、计算价格或本地发货不算成功。
+7. 商店只走业务 HTTPS RPC；WSS 只能推送已经提交的 read-only
+   `economy.updated`，不接受购买写入。
 
 ## 目标 Nakama 契约
 
 ### RPC、传输和输入类型
 
-保留已有客户端操作名，并在 Nakama Runtime 注册为 authenticated client
-RPC：
+Nakama 主路径使用 `POST /v2/rpc/<rpc_id>?unwrap=true`，body 是
+double-encoded JSON string。owner 从 `ctx.UserID` 取得，不接受 request 中的
+`user_id`/`player_id`。legacy `/v1/shop` 只在迁移 fallback 开关打开时可读；
+legacy purchase 关闭后必须返回明确的 `migration_read_only`。
 
-| RPC id | 传输 | 输入 | 输出 | 说明 |
-| --- | --- | --- | --- | --- |
-| `shop.get` | Nakama HTTPS RPC；旧 HTTP `GET /v1/shop` 为迁移 fallback | `{}`；可选 `catalog_version` 仅用于读取提示 | `ShopView` + `catalog_version`、`server_time_ms`、`server_authoritative`、`read_source` | 只读，不写 ledger |
-| `shop.purchase` | Nakama HTTPS RPC；旧 HTTP `POST /v1/shop/purchase` 为迁移 fallback | `item_id`、`count`、`catalog_version`、`idempotency_key` | `ShopPurchaseView` + receipt/ledger/revision 字段 | 只接受购买意图；价格和 grant 从目录重算 |
+| RPC id | 传输 | 请求 | 响应/副作用 |
+| --- | --- | --- | --- |
+| `shop.catalog` | Nakama HTTPS RPC；HTTP mirror `GET /v1/shop/catalog` | `ShopCatalogRequest{catalog_version?}`，默认 `{}` | `ShopCatalogResponse`；只读目录/wallet，不写 ledger |
+| `shop.purchase` | Nakama HTTPS RPC；HTTP mirror `POST /v1/shop/purchase` | `ShopPurchaseRequest{product_id,quantity,nonce,catalog_version?}` | `ShopPurchaseResponse`；原子扣费、发货、receipt、ledger |
 
-Nakama authenticated RPC 的业务 envelope `op` 必须分别为 `shop.get` 和
-`shop.purchase`，并沿用 `protocol_version`、`seq`、`timestamp`、`nonce`、
-`key_id`、`tag` 和 replay guard。登录/匿名认证不在本切片重新定义。
+Nakama authenticated RPC 的 envelope `op` 必须分别为 `shop.catalog` 和
+`shop.purchase`，并检查 `version`、`seq`、`timestamp_ms`、`nonce`、`key_id`、
+`tag`、`mode` 和 body hash。登录/匿名认证不在本切片重复定义。
 
-`count` 的目标边界为 `1..10`；超出范围返回 `quantity_invalid`。客户端当前
-默认发送 `1`，所以不会影响正常调用。旧 HTTP fallback 可在迁移窗口保留
-`count <= 0` 到 `1` 的兼容行为，但 Nakama 主写路径和切换后的 HTTP 路由
-必须使用严格边界，并在审计中记录拒绝原因。
+`quantity` 固定为 `1..10`；`0`、负数和 `11` 以上返回
+`quantity_invalid`。`catalog_version` 在读取时可只作客户端提示；购买时
+若非空必须等于当前可购买目录版本。`nonce` 不能为空，长度和字符集按
+业务 envelope 同等的 opaque id 规则校验，但不得在日志中输出原值。
 
 ### 输入/输出字段
 
-读取响应保持现有字段，增加迁移字段：
+目标 Go/JSON 对照：
 
-```json
-{
-  "ok": true,
-  "server_authoritative": true,
-  "currency": "gold",
-  "wallet": { "gold": 700, "ticket": 1 },
-  "items": [
-    {
-      "item_id": "stamina_potion",
-      "name": "Stamina Potion",
-      "description": "Restores one ranked attempt.",
-      "price": { "gold": 300 },
-      "grants": { "item": "stamina_potion", "count": 1 },
-      "stock": -1,
-      "purchased": 0,
-      "purchasable": true
-    }
-  ],
-  "catalog_version": "shop-local-s0",
-  "server_time_ms": 0,
-  "read_source": "nakama"
+```text
+ShopCatalogRequest = {
+  catalog_version?: string
+}
+
+ShopCatalogResponse = {
+  ok: bool,
+  products: ServerShopProduct[],
+  wallet: map<string,int>,
+  season: string,
+  catalog_version: string,
+  catalog_hash: "sha256:<hex>",
+  server_time: int64,
+  read_source: "nakama" | "legacy" | "shadow",
+  server_authoritative: true
+}
+
+ServerShopProduct = {
+  product_id: string,
+  kind: "card" | "chest" | "currency_bundle",
+  cost_kind: string,
+  cost_amount: int,
+  payload: string,
+  quantity: int,
+  rarity?: string,
+  season: string,
+  daily_limit: int,
+  purchasable: bool
+}
+
+ShopPurchaseRequest = {
+  product_id: string,
+  quantity: int,
+  nonce: string,
+  catalog_version?: string
+}
+
+ShopPurchaseResponse = {
+  ok: bool,
+  wallet: map<string,int>,
+  inventory: InventorySnapshot,
+  granted: GrantEntry[],
+  receipt: {
+    receipt_id: string,
+    product_id: string,
+    quantity: int,
+    cost_kind: string,
+    cost_amount: int,
+    catalog_version: string,
+    ledger_id: string,
+    created_at: int64
+  },
+  duplicate: bool,
+  operation_id: string,
+  server_authoritative: true,
+  server_time: int64
 }
 ```
 
-购买请求：
-
-```json
-{
-  "item_id": "stamina_potion",
-  "count": 1,
-  "catalog_version": "shop-local-s0",
-  "idempotency_key": "client-generated-opaque-key"
-}
-```
-
-购买成功响应至少包含：
-
-```json
-{
-  "ok": true,
-  "server_authoritative": true,
-  "item_id": "stamina_potion",
-  "count": 1,
-  "spent": { "gold": 300 },
-  "wallet": { "gold": 400 },
-  "inventory": { "stamina_potion": 1 },
-  "receipt_id": "receipt-id",
-  "ledger_id": "ledger-id",
-  "catalog_version": "shop-local-s0",
-  "duplicate": false,
-  "server_time_ms": 0
-}
-```
-
-同一幂等请求重试时返回相同 `receipt_id`、`ledger_id`、`spent`、wallet 和
-inventory，并将 `duplicate` 置为 `true`；不得重新执行扣款。
+当前 core 的 `ShopCatalogResponse` 尚无 `catalog_version`/`catalog_hash`/
+`read_source`，`ShopPurchaseResponse` 尚无 `duplicate`/`operation_id`/
+`ledger_id`；server agent 必须在 Nakama adapter/storage contract 中补齐这些
+迁移字段，不得让 client-agent 猜字段或把旧 `ShopPurchaseView` 当作新响应。
 
 统一错误码：
 
 - `unauthorized`：没有有效 Nakama session；
-- `not_found` / `product_not_found`：商品 id 不在服务端目录；
-- `invalid_request`：缺少 item 或幂等键、非法结构；
-- `quantity_invalid`：`count` 不在 `1..10`；
-- `catalog_version_mismatch`：购买基于过期目录；
-- `insufficient_funds`：余额不足；
-- `out_of_stock`：有限库存耗尽；
-- `idempotency_conflict`：幂等键复用于不同请求；
-- `storage_conflict`：wallet/inventory 条件写冲突，客户端可安全重读后重试；
-- `storage_unavailable`：持久化不可用。
+- `invalid_request`：JSON 结构或必填字段缺失；
+- `product_not_found`：`product_id` 不在目录；
+- `not_purchasable`：商品存在但当前不可购买；
+- `quantity_invalid`：数量不在 `1..10`；
+- `catalog_version_mismatch`：购买基于过期/未知目录；
+- `insufficient_currency`：目标 `cost_kind` 余额不足；
+- `daily_limit_reached`：目录声明限购且已超过；
+- `idempotency_conflict`：同 nonce 对应不同 request hash；
+- `storage_conflict`：wallet/inventory 条件写冲突，可安全重读；
+- `storage_unavailable`：Nakama storage/数据库不可用；
+- `migration_read_only`：legacy 写入已关闭。
 
-### Nakama storage、索引和 leaderboard 面
+### 当前目录冻结
 
-`02` 已定义的 wallet/inventory/ledger collection 是资产权威；本切片新增
-购买和目录 collection：
+迁移第一批以 `shop-local-s0` 为版本，目录 hash 由规范化的产品 JSON 计算。
+以下六项必须完整导入；不可用旧三项 legacy 商品替代：
+
+| product_id | kind | cost | payload/quantity | rarity | daily_limit |
+| --- | --- | --- | --- | --- | ---: |
+| `card.focus_lens.single` | `card` | `gold:200` | `focus_lens / 1` | `common` | `0` |
+| `card.bomb_amplifier.single` | `card` | `gold:200` | `bomb_amplifier / 1` | `common` | `0` |
+| `card.purge_charm.single` | `card` | `gold:500` | `purge_charm / 1` | `uncommon` | `0` |
+| `card.density_surge.single` | `card` | `gold:1200` | `density_surge / 1` | `rare` | `0` |
+| `card.last_arc.single` | `card` | `gems:300` | `last_arc / 1` | `epic` | `0` |
+| `chest.standard.pull` | `chest` | `gold:800` | `local_basic / 1` | empty | `0` |
+
+`name`/`description` 等展示字段可由客户端本地化，但不能成为扣款依据。
+`currency_bundle` 保留为 schema 类型，本目录暂不 seed。`daily_limit=0`
+表示无限制；若未来增加周期限购，必须添加明确的 `period_id` 和 reset job，
+不能复用 legacy lifetime `purchased` 计数。
+
+### Nakama storage、ledger 和 leaderboard 面
+
+`02` 的 wallet/inventory/asset revision 是资产权威；本切片新增目录、购买
+receipt 和历史 collection：
 
 | collection | key | 内容 | 写入者 |
 | --- | --- | --- | --- |
-| `shop_catalog` | `catalog_version` | 商品定义、价格、grant、stock、可购买状态、配置 hash | 发布/管理员；客户端只读 |
-| `shop_purchase_receipts` | `user_id:idempotency_key` | request hash、item/count、catalog version、spent、grant、receipt/ledger id、before/after revision、created_at | `shop.purchase` Runtime |
-| `shop_purchase_history` | `user_id:receipt_id` | 可审计的完整 receipt；用于按 receipt 查询和迁移对账 | `shop.purchase` Runtime |
-| `player_wallet` | `user_id` | 复用 `02`：扣款后的 currencies/revision/updated_at | `shop.purchase` 事务 |
-| `player_inventory` | `user_id` | 复用 `02`：发放后的 item/card quantities/revision/updated_at | `shop.purchase` 事务 |
-| `economy_ledger` | `user_id:ledger_id` | 复用 `02`：`reason=shop_purchase`、debit、grant、request hash、receipt id | `shop.purchase` 事务 |
+| `shop_catalog` | `<catalog_version>` | products、catalog hash、season、生效时间、publish status | server/admin；玩家只读 |
+| `shop_purchase_receipts` | `nonce`（owner=`ctx.UserID`） | request hash、product/quantity、catalog version、cost、grant、receipt/ledger/operation id、before/after revision、status | `shop.purchase` Runtime |
+| `shop_purchase_history` | `receipt_id` | 完整可审计 receipt、source、created_at、migration batch | `shop.purchase`/importer |
+| `player_wallet` | `primary` | 复用 `02`；扣款后 currencies/revision/hash | `shop.purchase` atomic batch |
+| `player_inventory` | `primary` | 复用 `02`；card/chest/item grant 后 snapshot/revision/hash | `shop.purchase` atomic batch |
+| `economy_ledger` | `ledger_id` | 复用 `02`；`reason=shop_purchase`、debit、grant、receipt、request hash | `shop.purchase` atomic batch |
+| `asset_operations` | `operation_id`/request hash | 复用 `02`；canonical response、duplicate/status | `shop.purchase` |
 
-Nakama storage 的写入必须使用 version/conditional write；若部署使用
-PostgreSQL repository，则 wallet、inventory、receipt、history 和 ledger
-需要同一数据库事务或等价的 outbox/补偿协议。不能只写
-`shop_purchase_receipts` 再异步扣钱包。
+玩家 collection 的 Nakama `owner_id` 必须来自 `ctx.UserID`，权限为
+`permission_read=0`、`permission_write=0`。不能仅以
+`user_id:nonce` 作为 owner-scoped key 的全局唯一保证；若同一用户并发购买，
+receipt create-only/conditional write 必须先占住 nonce，再以 `02` 的
+`player_asset_revision` 做统一水位。
 
-本切片的 leaderboard 面是空集：不注册 leaderboard id，不调用
-`nk.LeaderboardRecordWrite`，不从购买金额派生排名字段。若运营将来需要
-购买统计，只能另建 admin-only analytics projection，不能复用赛季排名。
+一次成功购买的写集合必须包含 wallet、inventory、receipt、history、ledger、
+asset operation 和新 revision；PostgreSQL repository 使用同一事务，Nakama
+Runtime 使用等价的 conditional/batch write。只写 receipt 再异步扣费是非法
+实现。
 
-### 初始目录快照
-
-迁移第一批必须按当前代码生成 `shop-local-s0`，不得采用旧规格中未实现的
-稀有度、宝箱商品或 gems 价格：
-
-| item_id | price | grants | stock | 迁移说明 |
-| --- | --- | --- | --- | --- |
-| `stamina_potion` | `gold: 300` | `stamina_potion: 1` | `-1` | 保留现有商品 |
-| `gacha_ticket` | `gold: 500` | `gacha_ticket: 1` | `-1` | 保留现有商品 |
-| `card_dust_bundle` | `gold: 200` | `card_dust: 50` | `-1` | 保留现有商品 |
-
-`name`、`description` 是展示元数据，不能成为扣费依据。目录 hash 和
-`catalog_version` 必须随发布 artifact 固定；目录配置变更产生新版本。
+leaderboard 面为空集：不注册 leaderboard id、不调用
+`nk.LeaderboardRecordWrite`，不从购买金额派生赛季分数。运营统计另开
+admin-only projection。
 
 ## 客户端接入点
 
-目标客户端接入当前已存在的 LayaAir 业务层：
+### LayaAir 方法与场景
 
 - `SpellKard/laya/src/core/net/lobby_client.ts`
-  - 保留 `fetchShop()` 和 `purchaseShopItem(itemId, count)`；
-  - `shop.get` / `shop.purchase` 的 Nakama RPC route 与 HTTP fallback 共用
-    同一解码器；
-  - 购买请求生成并复用 `idempotency_key`，重试不能生成新的 key；
-  - 解析 `receipt_id`、`ledger_id`、`duplicate`、`catalog_version`；
-  - 失败只更新 `lastError`，不能把本地预扣显示为成功。
+  - 保留 `fetchShop()`/`purchaseShopItem()` 作为上层兼容名，但内部目标
+    operation 改为 `shop.catalog`/`shop.purchase`；
+  - Nakama decoder 读取 `products`、`catalog_version`、nested `receipt`、
+    `granted`、`duplicate`、`operation_id` 和 canonical InventorySnapshot；
+  - 旧 `ShopView`/`ShopPurchaseView` decoder 只绑定 legacy
+    `/v1/shop` fallback，不能用于 Nakama response；
+  - 购买第一次点击生成稳定业务 nonce，超时/断线重试复用同一 nonce；
+    重新开始一个新购买意图才生成新 nonce；
+  - 不把 cost/grant/wallet/receipt 从本地 payload 回填到成功状态。
 - `SpellKard/laya/src/core/game/lobby_flow.ts`
-  - `openShop()` 进入页面先读 `shop.get`；
-  - `purchaseItem()` 成功后以服务端 wallet/inventory 替换本地快照；
-  - `storage_conflict`、`catalog_version_mismatch` 先重读目录/库存，再由用户
-    决定是否重新购买；不能自动以新幂等键重复扣款。
+  - `openShop()` 先调用 `shop.catalog`；
+  - 成功后以服务端 wallet/inventory 替换本地 snapshot；
+  - `catalog_version_mismatch` 先刷新目录，不能自动换 nonce 重买；
+  - `storage_conflict`/网络超时先用原 nonce 查询/重试，不能把未知状态当失败
+    后再次扣费。
 - `SpellKard/laya/src/platform/laya/scenes/shop_scene.ts`
-  - 继续渲染 item/name/price/stock/purchased；
-  - 购买按钮的可用状态只能参考服务端 `purchasable`；
-  - 成功提示使用服务端 grant/receipt，不在客户端抽样或计算价格。
+  - 展示 product id、kind、cost、quantity、rarity、purchasable、wallet；
+  - 成功提示使用服务端 `granted`/`receipt`；不本地抽卡、不本地计算价格；
+  - `insufficient_currency`、`daily_limit_reached`、`migration_read_only`
+    停留在 Shop 并显示服务端错误。
 - `SpellKard/laya/docs/checkin_shop_contract.md`
-  - 保留旧 HTTP wire shape 作为 fallback 兼容说明；
-  - 补充 Nakama RPC 的 `catalog_version`、`idempotency_key` 和 receipt 字段；
-  - 明确 Nakama 主路径的 envelope 和 `count=1..10` 边界。
+  - 增加 `shop.catalog` Nakama body/response；
+  - 把旧 `shop.get`/`item_id/count` 明确标为 legacy only；
+  - 记录 `nonce` 与 envelope nonce 的区别、双传输切换和 receipt 恢复规则。
 
-商店只使用 Nakama HTTPS RPC。WSS 不承担购买写入；若将来推送余额变化，
-只能发送服务端已提交的 `economy.updated` 只读通知，客户端仍需按 receipt
-重读 canonical snapshot。
+商店不使用战斗 transport。若 WSS 推送 `economy.updated`，payload 只能包含
+`operation_id`、asset revision 和 lookup hint；客户端仍必须调用
+`shop.catalog`/`inventory.get` 获取 canonical 状态。
 
 ## 数据迁移
 
 ### 输入和输出
 
-迁移工具输入为旧 Gensoulkyo 用户导出（不包含 session token 或原始密钥）：
+迁移工具输入为不含 session token、原始设备 id 或密钥的用户 manifest：
 
 ```text
 legacy_user_id
 identity_link -> nakama_user_id
 wallet
-shop_purchased[item_id]
-shop_inventory[item_id]
+legacy ShopPurchased[item_id]
+legacy ShopInventory[item_id]
+new product purchase records (when still present in memory/export)
 source_state_hash
+source_exported_at
 ```
 
-输出为 `migration_batch_id`、`target_user_id`、`target_wallet_revision`、
-`target_inventory_revision`、`source_state_hash`、`target_state_hash`、
-`migrated_at` 和 per-user status。
+输出至少为：
 
-### 顺序和映射
+```text
+migration_batch_id
+target_user_id
+target_wallet_revision
+target_inventory_revision
+source_state_hash
+target_state_hash
+legacy_summary_receipt_ids
+status
+rejected_reason?
+migrated_at
+```
 
-1. 先按 `01-auth-and-bootstrap.md` 的 `identity_link` 映射
-   `legacy_user_id` 到 Nakama `user_id`；重复或一对多映射停止该用户。
-2. 从当前 canonical wallet 导入/校验 gold 和其他货币；不得把
-   `ShopInventory` 的赠品错误地合并为 card copies。
-3. 将 `ShopInventory` 中的通用物品映射到 `player_inventory.items`：
-   `stamina_potion`、`gacha_ticket`、`card_dust` 必须作为 item quantity，
-   与 `02` 的 card inventory 分区保持可区分。
-4. 将 `ShopPurchased` 映射到 `shop_purchase_history` 的 legacy summary。
-   当前旧实现没有 receipt、ledger 和每笔购买 hash，因此不能伪造历史
-   receipt；写入 `source=legacy_import`、源快照 hash 和总计数。
-5. 写入 `player_wallet`/`player_inventory` 后重新计算 target hash，再写
-   `migration_batch_id` 和状态。任一数量、货币或 item id 不一致时置为
-   `rejected`，不切主读。
-6. 迁移期间使用 `legacy`、`shadow`、`nakama` 三态读源；切换前禁止两边
-   同时接受同一用户购买写入。
+### 映射与顺序
 
-当前代码的 `ShopPurchased` 并未按自然月重置；迁移必须按 lifetime count
-保留现状。若产品确实需要周期限购，应在新目录/数据模型中增加明确的
-`period_id` 和 reset job，另开规格，不得把旧 `purchased` 字段误解释为
-周期计数。
+1. 先按 `01` 的 `identity_link` 映射 user；一对多、冲突或缺失映射不切主读。
+2. 写入/校验 `02` 的 wallet 和 inventory，再导入 catalog version。不能把
+   legacy item 名称模糊映射为新 product id。
+3. 新 product API 的 card grant 映射为 card inventory；chest grant 映射为
+   owned chest pool；currency grant 映射为 wallet。card copies 不能误合并
+   为 chest/item 数量。
+4. legacy `ShopInventory` 的 `stamina_potion`、`gacha_ticket`、
+   `card_dust` 只作为 `player_inventory.items` 的 legacy item namespace；
+   不伪造为新 `card.*` product purchase。
+5. legacy `ShopPurchased` 没有 receipt/ledger/request hash 时只写
+   `shop_purchase_history` 的 `source=legacy_import` summary，不能制造假的
+   committed purchase receipt。当前新 product receipt 只在内存
+   `shopPurchases` 中存在；没有可靠 export 的历史同样只能记录
+   `reconciliation_required`。
+6. 每个 wallet/inventory/receipt/history/ledger import 写同一
+   `migration_batch_id`、source/target hash 和 target revision。导入重跑使用
+   `source_import:<batch_id>:<legacy_operation_id>` operation key，不能重复
+   扣款或发货。
+7. 先 `legacy`/`shadow` 双读比较 wallet、card/chest/item quantities、目录 hash
+   和 target hash；一致后切 `nakama`。切换窗口禁止同一用户同时走两条 purchase
+   写路径。
+
+迁移状态至少包含 `pending`、`shadow_match`、`active`、
+`reconciliation_required`、`rejected`、`orphan`。`ShopPurchased` 当前不是
+按自然月重置，导入必须保留 lifetime summary，不得推断周期限购。
 
 ## 回滚策略
 
-- 开关 `shop_authority=legacy|shadow|nakama` 控制读和写入口；
-  `shadow` 只比较脱敏的目录 hash、wallet hash、inventory hash 和结果 hash，
-  不执行第二次扣费。
-- 切换到 Nakama 前停止旧 HTTP purchase 写入，等待旧请求完成或明确拒绝；
-  同一用户只允许一个写权威。
-- Nakama 失败时可切回 legacy 读路径，但不能把已经成功的 Nakama receipt
-  在 legacy 重放。回滚前按 `idempotency_key`/receipt 对账，未完成事务只能
-  由 Nakama 重试或人工补偿。
-- 目录 hash 不一致、ledger 与 wallet 不一致或 receipt 缺失时立即关闭
-  `shop.purchase`，保留 `shop.get` 只读；不能回退到客户端价格/发货。
-- 回滚不删除 Nakama collection。`shop_purchase_receipts`、
-  `shop_purchase_history` 和 `economy_ledger` 作为审计保留；恢复 Nakama
-  时以 receipt/ledger 对账结果继续。
+- `shop_authority=legacy|shadow|nakama` 控制 read/write；`shadow` 只比较
+  catalog/wallet/inventory/result hash，不执行第二次购买。
+- 切到 Nakama 前关闭 legacy purchase 写入，等待 in-flight 请求成为
+  committed/rejected；同一 user 只允许一个 purchase authority。
+- Nakama 购买成功后切回 legacy 时，不得按旧 item/count 重放已成功 product
+  receipt；先按 nonce/receipt/ledger 对账，未知状态只能用原 nonce 查询。
+- 目录 hash、wallet/inventory revision、ledger 或 receipt 不一致时关闭
+  `shop.purchase`，保留 catalog/inventory 只读；不得退回客户端价格/发货。
+- 回滚不删除 `shop_catalog`、receipt/history、asset operation 或 ledger。
+  恢复 Nakama 时以已提交 receipt/ledger 和 asset revision 继续。
 
 ## 验收测试
 
 ### 服务端最小命令
 
-在 Gensoulkyo 仓库执行：
-
 ```bash
 cd /root/gotouhou/Gensoulkyo
-go test ./runtime/core ./runtime/httpapi ./runtime/nakamaapi ./cmd/gensoulkyo_nakama
+go test ./runtime/core ./runtime/httpapi ./runtime/nakamaapi ./runtime/security ./cmd/gensoulkyo_nakama
 go test -tags nakama ./cmd/gensoulkyo_nakama
-docker-compose --profile test run --rm test
+```
+
+Nakama/数据库联调必须使用 `docker-compose`：
+
+```bash
+cd /root/gotouhou/Gensoulkyo/deployments/nakama
+./build-plugin.sh
+docker-compose up -d
+docker-compose ps
+curl -fsS http://127.0.0.1:7350/healthcheck
+```
+
+协议/网络安全门禁：
+
+```bash
 python3 /root/gotouhou/docs/ops/protocol_audit_check.py
 ```
 
-`go test -tags nakama` 若因 Nakama SDK 缓存/依赖不可用失败，必须在 Nakama
-Compose 或联网 CI 中重跑；不能用无 tag 测试替代真实 plugin 构建。协议审计
-是必需项，因为本切片新增 authenticated RPC、业务 envelope 和客户端可写
-边界。
+若 tag build/pluginbuilder 因 pinned Nakama SDK 或网络不可用失败，报告首个
+依赖错误；无 tag 测试不能替代真实 plugin 验收。
 
 ### 服务端断言清单
 
-1. `shop.get` 和 HTTP fallback 返回三项初始目录，价格/grant/stock 与
-   `shop-local-s0` 完全一致；客户端提交伪造价格不会改变响应。
-2. 有效购买只扣服务端 wallet、增加对应 item、写一条
-   `economy_ledger` 和一条 receipt；wallet/inventory/ledger/receipt 的
-   revision 和 hash 可对账。
-3. 余额不足、未知商品、`count=0`、`count=11`、过期目录版本和缺失幂等键
-   分别返回指定错误，且 wallet、inventory、ledger 均不变化。
-4. 相同 `idempotency_key` 和 request hash 重试返回同一 receipt，wallet
-   只扣一次；相同 key 的不同 item/count 返回 `idempotency_conflict`。
-5. 并发购买在 conditional write/数据库事务下最多成功一次对应扣款；
-   storage conflict 可安全重读，不能产生半笔发货。
-6. Nakama instance 重启后 receipt、wallet、inventory 和购买历史可恢复；
-   `shop.get` 不依赖进程内 `ShopPurchased`/`ShopInventory`。
-7. 服务端未调用 leaderboard 写入；购买结果不包含排名/战斗结算权威字段。
-8. 伪造 `user_id`、未认证 session、重放 envelope 和玩家 WSS 写入均失败。
+1. `shop.catalog` 和 `/v1/shop/catalog` 返回相同 6 个 product id、价格、
+   payload/quantity、rarity、season 和 catalog hash；Nakama 不注册 `shop.get`。
+2. 伪造 cost/grant/wallet/owner 字段不会影响结果；缺失 session、非法 product、
+   `quantity=0/11`、空 nonce、过期 catalog 分别返回指定错误且不变更资产。
+3. 有效购买在一次 atomic operation 中扣正确 currency、发正确 card/chest/
+   currency grant，并写 receipt、history、ledger、asset operation；结果包含
+   nested receipt、operation id 和 canonical wallet/inventory。
+4. 相同 user/product/quantity/nonce 重试只返回同一 receipt，`duplicate=true`
+   或等价标记，wallet 只扣一次；同 nonce 不同 request hash 返回
+   `idempotency_conflict`。
+5. 并发购买最多一个 operation 占用相同 nonce；条件写冲突不产生半笔扣款或
+   半笔发货，客户端可用原 nonce 安全重试。
+6. Nakama/数据库重启后 catalog、wallet、inventory、receipt、ledger、asset
+   revision 可恢复；不依赖 `Service.shopPurchases`/`shopPurchaseLimits`。
+7. legacy `/v1/shop` 在 read-only fallback 下仍能读旧形状；关闭 legacy write
+   后旧 purchase 返回 `migration_read_only`，不会绕过新 authority。
+8. 本切片不调用 leaderboard write；购买响应不包含战斗结算/排名权威字段。
+9. 伪造 user id、越权 storage key、重放 business envelope 和玩家 WSS purchase
+   均失败。
 
 ### 客户端断言清单
 
-1. `fetchShop()` 能从 Nakama RPC 和旧 HTTP fallback 解码同一商品投影；
-   页面显示服务端 price/grants，不计算本地价格。
-2. 正常购买后使用服务端 receipt、wallet 和 inventory 刷新页面；失败响应
-   不更新本地成功状态。
-3. 网络超时重试沿用同一 `idempotency_key`，重复响应显示 duplicate 或同一
-   receipt，不出现二次扣费。
-4. `catalog_version_mismatch`、`storage_conflict`、`insufficient_funds`
-   可恢复显示并停留在 Shop；不会跳转到战斗或伪造发货。
-5. 刷新/重连后按 receipt 或 `shop.get` 恢复状态；客户端本地修改钱包、
-   stock、purchased 不影响下一次请求。
-6. 运行 LayaAir live check，覆盖目录读取、成功购买、未知商品、余额不足、
-   幂等重试和重新登录后的状态恢复。
+1. Nakama transport 调用 `shop.catalog`/`shop.purchase`，HTTP fallback 调用
+   `/v1/shop/catalog`/`/v1/shop/purchase`；legacy `shop.get` 只在显式旧配置下
+   使用。
+2. Shop 页面显示服务端 products/cost/grants，不根据本地价格或随机数判断成功。
+3. 网络超时、断线和重复点击沿用同一 nonce；恢复后展示同一 receipt，不出现
+   二次扣款/二次发货。
+4. `catalog_version_mismatch`、`storage_conflict`、`insufficient_currency`、
+   `migration_read_only` 均可恢复且停留在 Shop；失败不更新成功状态。
+5. 刷新/重连/重新登录后按 operation id、receipt 或 catalog/inventory RPC
+   恢复；本地修改 wallet/product/stock 不影响下一次服务端结果。
+6. Laya live check 覆盖 6 商品读取、成功购买、未知 product、余额不足、数量
+   边界、幂等重试和 legacy read-only fallback。
 
-## 交付物和完成判定
+最小客户端命令：
 
-`nakama-server-agent` 交付：Nakama RPC 注册、catalog seed、storage schema/
-migration、conditional purchase transaction、receipt/ledger、legacy import
-工具、authority switch 和 Go/Nakama tests。
+```bash
+cd /root/gotouhou/SpellKard/laya
+npm run typecheck
+npm test
+```
 
-`client-agent` 交付：`LobbyClient` 的 Nakama/HTTP 双传输投影、稳定幂等键、
-Shop UI 错误状态、receipt 展示和 Laya live check。
+## 交付物与完成判定
 
-切片只有在 Nakama 主路径通过服务端断言、客户端能切换传输且 legacy 回滚
-不会重复扣款时才算完成。
+`nakama-server-agent` 必须交付：`shop.catalog`/`shop.purchase` RPC、目录
+seed/hash、storage schema、wallet/inventory/ledger atomic write、receipt/
+idempotency、legacy importer、authority switch、Nakama/HTTP tests。
+
+`client-agent` 必须交付：Nakama/HTTP 双传输 decoder、稳定 nonce、product/
+receipt projection、错误/重试状态、Shop UI 和 live check。
+
+只有在 Nakama 主路径通过 6 商品与原子账本断言、legacy fallback 不会绕过
+authority、重试不会重复扣款/发货、客户端不接受伪造价格/grant，并通过协议
+审计后，本切片才算完成。
