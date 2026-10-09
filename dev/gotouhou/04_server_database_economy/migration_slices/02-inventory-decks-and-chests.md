@@ -35,10 +35,10 @@ RPC、一个幂等 operation collection 和两个只读配置集合。实现顺�
 | --- | --- | --- | --- | --- |
 | `inventory.get` | authenticated custom RPC | `EmptyRequest` | `InventorySnapshot` | 无 |
 | `decks.list` | authenticated custom RPC | `EmptyRequest` | `DeckListResponse` | 无 |
-| `decks.save` | authenticated custom RPC | `SaveDeckRequest` | `SaveDeckResponse` | `player_decks`、`asset_operations`（不产生 economy ledger） |
-| `cards.upgrade` | authenticated custom RPC | `CardUpgradeRequest` | `CardUpgradeResponse` | `player_wallet`、`player_inventory`、`economy_ledger`、`asset_operations` |
+| `decks.save` | authenticated custom RPC | `SaveDeckRequest` | `SaveDeckResponse` | `player_decks`、`player_asset_revision`、`asset_operations`（不产生 economy ledger） |
+| `cards.upgrade` | authenticated custom RPC | `CardUpgradeRequest` | `CardUpgradeResponse` | `player_wallet`、`player_inventory`、`player_asset_revision`、`economy_ledger`、`asset_operations` |
 | `chests.list` | authenticated custom RPC | `EmptyRequest` | `ChestSnapshot` | 无 |
-| `chests.open` | authenticated custom RPC | `ChestOpenRequest` | `ChestOpenResponse` | `player_wallet`、`player_inventory`、`player_chests`、`chest_openings`、`economy_ledger` |
+| `chests.open` | authenticated custom RPC | `ChestOpenRequest` | `ChestOpenResponse` | `player_wallet`、`player_inventory`、`player_chests`、`player_asset_revision`、`chest_openings`、`economy_ledger`、`asset_operations` |
 
 `card_catalog` 与 `chest_pools` 是 Go Runtime 管理的只读 storage；它们不是
 leaderboard，也不接受客户端写入。`asset_operations` 保存同一
